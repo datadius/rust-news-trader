@@ -1,6 +1,16 @@
+mod position_list;
+mod symbol_information;
+
+use position_list::PositionList;
+use symbol_information::SymbolInformation;
+
 use error_chain::error_chain;
-use serde::Deserialize;
+use hex;
+use hmac::Mac;
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
+use std::env;
 use std::io::Read;
 
 error_chain! {
@@ -11,64 +21,61 @@ error_chain! {
     }
 }
 
-#[derive(Deserialize)]
-struct SymbolInformation {
-    result: ListSymbols,
-    retCode: i32,
-    retExtInfo: Value,
-    retMsg: String,
-    time: i64,
+fn construct_headers(payload: &str) -> HeaderMap {
+    let api_key = env::var("bybit_order_key").expect("BYBIT_API_KEY not set");
+    let api_secret = env::var("bybit_order_secret").expect("BYBIT_API_SECRET not set");
+    let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
+    let recv_window = "5000";
+    let to_sign = format!(
+        "{}{}{}{}",
+        &current_timestamp, &api_key, &recv_window, payload
+    );
+
+    let signature = {
+        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+        let mut mac = HmacSha256::new_from_slice(&api_secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(to_sign.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-BAPI-API-KEY", HeaderValue::from_str(&api_key).unwrap());
+    headers.insert("X-BAPI-SIGN", HeaderValue::from_str(&signature).unwrap());
+    headers.insert(
+        "X-BAPI-TIMESTAMP",
+        HeaderValue::from_str(&current_timestamp).unwrap(),
+    );
+    headers.insert(
+        "X-BAPI-RECV-WINDOW",
+        HeaderValue::from_str(&recv_window).unwrap(),
+    );
+    headers.insert("Connection", HeaderValue::from_str("keep-alive").unwrap());
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_str("application/json").unwrap(),
+    );
+    headers
 }
 
-#[derive(Deserialize)]
-struct ListSymbols {
-    category: String,
-    list: Vec<Symbol>,
-    nextPageCursor: String,
-}
+fn get_leverage(symbol: &str) -> Result<()> {
+    let params = format!("category=linear&symbol={}", symbol);
+    let url = format!("https://api.bybit.com/v5/position/list?{}", params);
+    let client = Client::new();
+    let mut res = client
+        .get(&url)
+        .headers(construct_headers(&params))
+        .send()?;
 
-#[derive(Deserialize)]
-struct Symbol {
-    baseCoin: String,
-    contractType: String,
-    copyTrading: String,
-    deliveryFeeRate: String,
-    deliveryTime: String,
-    fundingInterval: i32,
-    launchTime: String,
-    leverageFilter: LeverageFilter,
-    lotSizeFilter: LotSizeFilter,
-    priceFilter: PriceFilter,
-    priceScale: String,
-    quoteCoin: String,
-    settleCoin: String,
-    status: String,
-    symbol: String,
-    unifiedMarginTrade: bool,
-}
+    let mut body = String::new();
+    res.read_to_string(&mut body)?;
 
-#[derive(Deserialize)]
-struct LeverageFilter {
-    leverageStep: String,
-    maxLeverage: String,
-    minLeverage: String,
-}
+    let leverage_json: PositionList = serde_json::from_str(&body)?;
 
-#[derive(Deserialize)]
-struct LotSizeFilter {
-    maxOrderQty: String,
-    minOrderQty: String,
-    postOnlyMaxOrderQty: String,
-    qtyStep: String,
-}
+    println!("leverage_json = {}", leverage_json.result.list[0].leverage);
 
-#[derive(Deserialize)]
-struct PriceFilter {
-    maxPrice: String,
-    minPrice: String,
-    tickSize: String,
+    Ok(())
 }
-
 fn get_symbol_information(symbol: &str) -> Result<()> {
     let url = format!(
         "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={}",
@@ -77,12 +84,6 @@ fn get_symbol_information(symbol: &str) -> Result<()> {
     let mut res = reqwest::blocking::get(&url)?;
     let mut body = String::new();
     res.read_to_string(&mut body)?;
-
-    //println!("body = {}", body);
-
-    //let initial: Value = serde_json::from_str(&body)?;
-
-    //println!("initial = {}", initial);
 
     let v: SymbolInformation = serde_json::from_str(&body)?;
 
@@ -93,6 +94,8 @@ fn get_symbol_information(symbol: &str) -> Result<()> {
 
 fn main() -> Result<()> {
     get_symbol_information("BTCUSDT")?;
+
+    get_leverage("BTCUSDT")?;
 
     Ok(())
 }
