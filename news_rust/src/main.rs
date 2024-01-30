@@ -8,22 +8,14 @@ use position_list::PositionList;
 use price_information::PriceInformation;
 use symbol_information::SymbolInformation;
 
-use error_chain::error_chain;
 use hex;
 use hmac::Mac;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use std::env;
+use std::error;
 use std::io::Read;
-
-error_chain! {
-    foreign_links {
-        Io(std::io::Error);
-        HttpRequest(reqwest::Error);
-        ValueError(serde_json::Error);
-    }
-}
 
 fn construct_headers(payload: &str) -> HeaderMap {
     let api_key = env::var("bybit_order_key").expect("BYBIT_API_KEY not set");
@@ -62,7 +54,7 @@ fn construct_headers(payload: &str) -> HeaderMap {
     headers
 }
 
-fn get_order_qty(order_id: &str) -> Result<()> {
+fn get_order_qty(order_id: &str) -> Result<f32, Box<dyn error::Error>> {
     let params = format!("category=spot&order_id={}", order_id);
     let url = format!("https://api.bybit.com/v5/order/history?{}", params);
     let client = Client::new();
@@ -78,10 +70,13 @@ fn get_order_qty(order_id: &str) -> Result<()> {
     println!("qty = {}", order_json.result.list[0].cumExecQty);
     println!("fee = {}", order_json.result.list[0].cumExecFee);
 
-    Ok(())
+    let cum_exec_qty: f32 = order_json.result.list[0].cumExecQty.parse().unwrap();
+    let cum_exec_fee: f32 = order_json.result.list[0].cumExecFee.parse().unwrap();
+
+    Ok(cum_exec_qty - cum_exec_fee)
 }
 
-fn get_leverage(symbol: &str) -> Result<()> {
+fn get_leverage(symbol: &str) -> Result<u8, Box<dyn error::Error>> {
     let params = format!("category=linear&symbol={}", symbol);
     let url = format!("https://api.bybit.com/v5/position/list?{}", params);
     let client = Client::new();
@@ -95,12 +90,12 @@ fn get_leverage(symbol: &str) -> Result<()> {
 
     let leverage_json: PositionList = serde_json::from_str(&body)?;
 
-    println!("leverage = {}", leverage_json.result.list[0].leverage);
+    let value: u8 = leverage_json.result.list[0].leverage.parse().unwrap();
 
-    Ok(())
+    Ok(value)
 }
 
-fn get_price(symbol: &str) -> Result<()> {
+fn get_price(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     let url = format!(
         "https://api.bybit.com/v5/market/tickers?category=linear&symbol={}",
         symbol
@@ -112,11 +107,12 @@ fn get_price(symbol: &str) -> Result<()> {
 
     let v: PriceInformation = serde_json::from_str(&body)?;
 
-    println!("price = {}", v.result.list[0].lastPrice);
+    let value: f32 = v.result.list[0].lastPrice.parse().unwrap();
 
-    Ok(())
+    Ok(value)
 }
-fn get_symbol_information(symbol: &str) -> Result<()> {
+
+fn get_symbol_information(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     let url = format!(
         "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={}",
         symbol
@@ -127,19 +123,27 @@ fn get_symbol_information(symbol: &str) -> Result<()> {
 
     let v: SymbolInformation = serde_json::from_str(&body)?;
 
-    println!("qtyStep = {}", v.result.list[0].lotSizeFilter.qtyStep);
+    let value: f32 = v.result.list[0].lotSizeFilter.qtyStep.parse().unwrap();
 
-    Ok(())
+    Ok(value)
 }
 
-fn main() -> Result<()> {
-    get_symbol_information("BTCUSDT")?;
+fn main() -> Result<(), Box<dyn error::Error>> {
+    let qty_step = get_symbol_information("BTCUSDT")?;
 
-    get_leverage("BTCUSDT")?;
+    println!("qty_step = {}", qty_step);
 
-    get_price("BTCUSDT")?;
+    let leverage = get_leverage("BTCUSDT")?;
 
-    get_order_qty("85997568")?;
+    println!("leverage = {}", leverage);
+
+    let price = get_price("BTCUSDT")?;
+
+    println!("price = {}", price);
+
+    let qty_ext = get_order_qty("85997568")?;
+
+    println!("qty = {}", qty_ext);
 
     Ok(())
 }
