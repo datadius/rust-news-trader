@@ -1,7 +1,11 @@
+mod order_information;
 mod position_list;
+mod price_information;
 mod symbol_information;
 
+use order_information::OrderInformation;
 use position_list::PositionList;
+use price_information::PriceInformation;
 use symbol_information::SymbolInformation;
 
 use error_chain::error_chain;
@@ -58,6 +62,25 @@ fn construct_headers(payload: &str) -> HeaderMap {
     headers
 }
 
+fn get_order_qty(order_id: &str) -> Result<()> {
+    let params = format!("category=spot&order_id={}", order_id);
+    let url = format!("https://api.bybit.com/v5/order/history?{}", params);
+    let client = Client::new();
+    let mut res = client
+        .get(&url)
+        .headers(construct_headers(&params))
+        .send()?;
+    let mut body = String::new();
+    res.read_to_string(&mut body)?;
+
+    let order_json: OrderInformation = serde_json::from_str(&body)?;
+
+    println!("qty = {}", order_json.result.list[0].cumExecQty);
+    println!("fee = {}", order_json.result.list[0].cumExecFee);
+
+    Ok(())
+}
+
 fn get_leverage(symbol: &str) -> Result<()> {
     let params = format!("category=linear&symbol={}", symbol);
     let url = format!("https://api.bybit.com/v5/position/list?{}", params);
@@ -72,7 +95,24 @@ fn get_leverage(symbol: &str) -> Result<()> {
 
     let leverage_json: PositionList = serde_json::from_str(&body)?;
 
-    println!("leverage_json = {}", leverage_json.result.list[0].leverage);
+    println!("leverage = {}", leverage_json.result.list[0].leverage);
+
+    Ok(())
+}
+
+fn get_price(symbol: &str) -> Result<()> {
+    let url = format!(
+        "https://api.bybit.com/v5/market/tickers?category=linear&symbol={}",
+        symbol
+    );
+    let client = Client::new();
+    let mut res = client.get(&url).send()?;
+    let mut body = String::new();
+    res.read_to_string(&mut body)?;
+
+    let v: PriceInformation = serde_json::from_str(&body)?;
+
+    println!("price = {}", v.result.list[0].lastPrice);
 
     Ok(())
 }
@@ -87,7 +127,7 @@ fn get_symbol_information(symbol: &str) -> Result<()> {
 
     let v: SymbolInformation = serde_json::from_str(&body)?;
 
-    println!("v = {}", v.result.list[0].lotSizeFilter.qtyStep);
+    println!("qtyStep = {}", v.result.list[0].lotSizeFilter.qtyStep);
 
     Ok(())
 }
@@ -96,6 +136,10 @@ fn main() -> Result<()> {
     get_symbol_information("BTCUSDT")?;
 
     get_leverage("BTCUSDT")?;
+
+    get_price("BTCUSDT")?;
+
+    get_order_qty("85997568")?;
 
     Ok(())
 }
