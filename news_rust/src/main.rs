@@ -128,12 +128,16 @@ fn get_symbol_information(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     Ok(value)
 }
 
-fn market_buy_futures_position(symbol: &str, qty: f32) -> Result<(), Box<dyn error::Error>> {
+fn market_futures_position(
+    symbol: &str,
+    side: &str,
+    qty: f32,
+) -> Result<(), Box<dyn error::Error>> {
     let url = "https://api-testnet.bybit.com/v5/order/create";
 
     let payload = format!(
-        r#"{{"category":"linear","symbol":"{}","side":"Buy","orderType":"Market","qty":"{}"}}"#,
-        symbol, qty
+        r#"{{"category":"linear","symbol":"{}","side":"{}","orderType":"Market","qty":"{}"}}"#,
+        symbol, side, qty
     );
 
     println!("payload = {}", payload);
@@ -170,7 +174,9 @@ fn main() -> Result<(), Box<dyn error::Error>> {
 
     //println!("qty = {}", qty_ext);
 
-    market_buy_futures_position("BTCUSDT", 0.001)?;
+    market_futures_position("BTCUSDT", "Buy", 0.001)?;
+
+    market_futures_position("BTCUSDT", "Sell", 0.001)?;
 
     Ok(())
 }
