@@ -18,8 +18,8 @@ use std::error;
 use std::io::Read;
 
 fn construct_headers(payload: &str) -> HeaderMap {
-    let api_key = env::var("bybit_order_key").expect("BYBIT_API_KEY not set");
-    let api_secret = env::var("bybit_order_secret").expect("BYBIT_API_SECRET not set");
+    let api_key = env::var("testnet_bybit_order_key").expect("BYBIT_API_KEY not set");
+    let api_secret = env::var("testnet_bybit_order_secret").expect("BYBIT_API_SECRET not set");
     let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
     let recv_window = "5000";
     let to_sign = format!(
@@ -56,7 +56,7 @@ fn construct_headers(payload: &str) -> HeaderMap {
 
 fn get_order_qty(order_id: &str) -> Result<f32, Box<dyn error::Error>> {
     let params = format!("category=spot&order_id={}", order_id);
-    let url = format!("https://api.bybit.com/v5/order/history?{}", params);
+    let url = format!("https://api-testnet.bybit.com/v5/order/history?{}", params);
     let client = Client::new();
     let mut res = client
         .get(&url)
@@ -78,7 +78,7 @@ fn get_order_qty(order_id: &str) -> Result<f32, Box<dyn error::Error>> {
 
 fn get_leverage(symbol: &str) -> Result<u8, Box<dyn error::Error>> {
     let params = format!("category=linear&symbol={}", symbol);
-    let url = format!("https://api.bybit.com/v5/position/list?{}", params);
+    let url = format!("https://api-testnet.bybit.com/v5/position/list?{}", params);
     let client = Client::new();
     let mut res = client
         .get(&url)
@@ -97,7 +97,7 @@ fn get_leverage(symbol: &str) -> Result<u8, Box<dyn error::Error>> {
 
 fn get_price(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     let url = format!(
-        "https://api.bybit.com/v5/market/tickers?category=linear&symbol={}",
+        "https://api-testnet.bybit.com/v5/market/tickers?category=linear&symbol={}",
         symbol
     );
     let client = Client::new();
@@ -114,7 +114,7 @@ fn get_price(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
 
 fn get_symbol_information(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     let url = format!(
-        "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol={}",
+        "https://api-testnet.bybit.com/v5/market/instruments-info?category=linear&symbol={}",
         symbol
     );
     let mut res = reqwest::blocking::get(&url)?;
@@ -126,6 +126,31 @@ fn get_symbol_information(symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     let value: f32 = v.result.list[0].lotSizeFilter.qtyStep.parse().unwrap();
 
     Ok(value)
+}
+
+fn market_buy_futures_position(symbol: &str, qty: f32) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    let payload = format!(
+        r#"{{"category":"linear","symbol":"{}","side":"Buy","orderType":"Market","qty":"{}"}}"#,
+        symbol, qty
+    );
+
+    println!("payload = {}", payload);
+
+    let client = Client::new();
+    let mut res = client
+        .post(url)
+        .headers(construct_headers(&payload))
+        .body(payload)
+        .send()?;
+    let mut body = String::new();
+    res.read_to_string(&mut body)?;
+
+    let v: Value = serde_json::from_str(&body)?;
+    println!("v = {}", v);
+
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn error::Error>> {
@@ -141,9 +166,11 @@ fn main() -> Result<(), Box<dyn error::Error>> {
 
     println!("price = {}", price);
 
-    let qty_ext = get_order_qty("85997568")?;
+    //let qty_ext = get_order_qty("85997568")?;
 
-    println!("qty = {}", qty_ext);
+    //println!("qty = {}", qty_ext);
+
+    market_buy_futures_position("BTCUSDT", 0.001)?;
 
     Ok(())
 }
