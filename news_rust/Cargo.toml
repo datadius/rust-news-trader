@@ -13,3 +13,6 @@ hmac = "0.12.1"
 hex = "0.4.3"
 sha2 = "0.10.8"
 chrono = "0.4.33"
+tokio = {version = "1.36.0", features = ["macros"]}
+log = "0.4.20"
+env_logger = "0.11.0"
