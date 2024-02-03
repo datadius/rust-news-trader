@@ -12,6 +12,7 @@ use env_logger;
 use hex;
 use hmac::Mac;
 use log::{debug, error, info};
+use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde_json::Value;
@@ -156,23 +157,64 @@ async fn market_futures_position(
     Ok(())
 }
 
+enum TpCases {
+    BinanceListing,
+    UpbitListing,
+    BinanceFuturesListing,
+    NoListing,
+}
+
+fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
+    if title.contains("Binance Will List") {
+        Ok((r#"\([\d]*([^()]+)\)"#, TpCases::BinanceListing))
+    } else if title.contains("마켓 디지털 자산 추가") {
+        Ok((
+            r#"\([\d]*([^()]+[^(\u3131-\u314e|\u314f-\u3163|\uac00-\ud7a3)])\)"#,
+            TpCases::UpbitListing,
+        ))
+    } else if title.contains("Binance Futures Will Launch") {
+        Ok((
+            r#"(?<=USDⓈ-M )\d*(.*)(?= Perpetual)"#,
+            TpCases::BinanceFuturesListing,
+        ))
+    } else {
+        Ok(("", TpCases::NoListing))
+    }
+}
+
+fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
+    let (re_string, tp_case) = title_case(title)?;
+    let re = Regex::new(re_string)?;
+    let symbol = re
+        .captures(title)
+        .unwrap()
+        .get(1)
+        .map_or("", |m| m.as_str());
+
+    Ok((symbol, tp_case))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
     env_logger::Builder::new()
         .filter(None, log::LevelFilter::Info)
         .init();
     let client = Client::new();
-
+    let title = "Binance Will List Pyth Network (PYTH) with Seed Tag Applied";
     let size: f32 = 200.0;
-    let qty_step: f32 = get_symbol_information(client.clone(), "BTCUSDT").await?;
+
+    let (symbol, tp_case) = process_title(title)?;
+    let trade_pair = format!("{}USDT", symbol);
+
+    let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
 
     info!("qty_step = {}", qty_step);
 
-    let leverage: f32 = get_leverage(client.clone(), "BTCUSDT").await?;
+    let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
 
     info!("leverage = {}", leverage);
 
-    let price: f32 = get_price(client.clone(), "BTCUSDT").await?;
+    let price: f32 = get_price(client.clone(), &trade_pair).await?;
 
     info!("price = {}", price);
 
@@ -184,9 +226,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
     info!("qty = {}", qty);
 
-    market_futures_position(client.clone(), "BTCUSDT", "Buy", qty).await?;
+    market_futures_position(client.clone(), &trade_pair, "Buy", qty).await?;
 
-    market_futures_position(client.clone(), "BTCUSDT", "Sell", qty).await?;
+    market_futures_position(client.clone(), &trade_pair, "Sell", qty).await?;
 
     Ok(())
 }
