@@ -2,13 +2,16 @@ mod order_information;
 mod position_list;
 mod price_information;
 mod symbol_information;
+mod tree_response;
 
 use order_information::OrderInformation;
 use position_list::PositionList;
 use price_information::PriceInformation;
 use symbol_information::SymbolInformation;
+use tree_response::TreeResponse;
 
 use env_logger;
+use futures::{SinkExt, StreamExt};
 use hex;
 use hmac::Mac;
 use log::{debug, error, info};
@@ -19,6 +22,12 @@ use serde_json::Value;
 use std::env;
 use std::error;
 use std::io::Read;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::protocol::Message,
+    tungstenite::{Error, Result},
+};
+use url::Url;
 
 fn construct_headers(payload: &str) -> HeaderMap {
     let api_key = env::var("testnet_bybit_order_key").expect("BYBIT_API_KEY not set");
@@ -200,35 +209,40 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         .filter(None, log::LevelFilter::Info)
         .init();
     let client = Client::new();
-    let title = "Binance Will List Pyth Network (PYTH) with Seed Tag Applied";
     let size: f32 = 200.0;
+    if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
+        let msg: Message = socket.next().await.expect("can't fetch data")?;
 
-    let (symbol, tp_case) = process_title(title)?;
-    let trade_pair = format!("{}USDT", symbol);
+        let response = msg.to_text()?;
 
-    let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
+        let tree_response: TreeResponse = serde_json::from_str(&response)?;
 
-    info!("qty_step = {}", qty_step);
+        let (symbol, tp_case) = process_title(&tree_response.title)?;
 
-    let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
+        let trade_pair = format!("{}USDT", symbol);
 
-    info!("leverage = {}", leverage);
+        let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
 
-    let price: f32 = get_price(client.clone(), &trade_pair).await?;
+        info!("qty_step = {}", qty_step);
 
-    info!("price = {}", price);
+        let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
 
-    //let qty_ext = get_order_qty("85997568")?;
+        info!("leverage = {}", leverage);
 
-    //info!("qty = {}", qty_ext);
+        let price: f32 = get_price(client.clone(), &trade_pair).await?;
 
-    let qty = (size * leverage / price / qty_step).floor() * qty_step;
+        info!("price = {}", price);
 
-    info!("qty = {}", qty);
+        let qty = (size * leverage / price / qty_step).floor() * qty_step;
 
-    market_futures_position(client.clone(), &trade_pair, "Buy", qty).await?;
+        info!("qty = {}", qty);
 
-    market_futures_position(client.clone(), &trade_pair, "Sell", qty).await?;
+        market_futures_position(client.clone(), &trade_pair, "Buy", qty).await?;
+
+        market_futures_position(client.clone(), &trade_pair, "Sell", qty).await?;
+    } else {
+        error!("Can't connect to test server");
+    };
 
     Ok(())
 }
