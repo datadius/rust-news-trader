@@ -22,6 +22,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{collections::HashMap, env, error, io::Read};
+use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::protocol::Message,
@@ -141,32 +142,76 @@ async fn get_symbol_information(
     Ok(value)
 }
 
-async fn market_futures_position(
+async fn market_buy_futures_position(
     client: Client,
     symbol: &str,
-    side: &str,
     qty: f32,
+    qty_step: f32,
+    tp_instance_arr: &[TpInstance; 2],
 ) -> Result<(), Box<dyn error::Error>> {
     let url = "https://api-testnet.bybit.com/v5/order/create";
 
     let payload = format!(
-        r#"{{"category":"linear","symbol":"{}","side":"{}","orderType":"Market","qty":"{}"}}"#,
-        symbol, side, qty
+        r#"{{"category":"linear","symbol":"{}","side":"Buy","orderType":"Market","qty":"{}"}}"#,
+        symbol, qty
     );
 
     info!("payload = {}", payload);
 
-    let res = client
+    if let Ok(res) = client
         .post(url)
         .headers(construct_headers(&payload))
         .body(payload)
         .send()
-        .await?;
-    let body = res.text().await?;
+        .await
+    {
+        let body = res.text().await?;
 
-    let v: Value = serde_json::from_str(&body)?;
-    info!("v = {}", v);
+        let v: Value = serde_json::from_str(&body)?;
+        info!("v = {}", v);
+        if tp_instance_arr[0].time != 0 {
+            market_sell_futures_position(client, symbol, qty, qty_step, tp_instance_arr).await?;
+        } else {
+            info!("Failed to sell {}", v);
+        }
+    } else {
+        error!("Error in market_buy_futures_position");
+    }
+    Ok(())
+}
 
+async fn market_sell_futures_position(
+    client: Client,
+    symbol: &str,
+    qty: f32,
+    qty_step: f32,
+    tp_instance_arr: &[TpInstance; 2],
+) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    for tp in tp_instance_arr {
+        let seconds: u64 = tp.time as u64;
+        sleep(Duration::from_secs(seconds)).await;
+        let tp_pct = &tp.pct;
+        let tp_qty = ((qty / qty_step) * tp_pct).floor() * qty_step;
+        let payload = format!(
+            r#"{{"category":"linear","symbol":"{}","side":"Sell","orderType":"Market","qty":"{}"}}"#,
+            symbol, tp_qty
+        );
+
+        info!("payload = {}", payload);
+
+        let res = client
+            .post(url)
+            .headers(construct_headers(&payload))
+            .body(payload)
+            .send()
+            .await?;
+        let body = res.text().await?;
+
+        let v: Value = serde_json::from_str(&body)?;
+        info!("v = {}", v);
+    }
     Ok(())
 }
 
@@ -177,6 +222,13 @@ enum TpCases {
     BinanceFuturesListing,
     NoListing,
 }
+
+#[derive(Copy, Clone)]
+struct TpInstance {
+    time: u64,
+    pct: f32,
+}
+const EMPTY_TP_CASE: [TpInstance; 2] = [TpInstance { time: 0, pct: 0.0 }; 2];
 
 fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
     if title.contains("Binance Will List") {
@@ -218,15 +270,39 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let mut tp_map = HashMap::new();
     tp_map.insert(
         TpCases::BinanceListing,
-        [[2.0 * 60.0, 0.75], [8.0 * 60.0, 0.25]],
+        [
+            TpInstance {
+                time: 2 * 60,
+                pct: 0.75,
+            },
+            TpInstance {
+                time: 8 * 60,
+                pct: 0.25,
+            },
+        ],
     );
     tp_map.insert(
         TpCases::UpbitListing,
-        [[2.0 * 60.0, 0.75], [13.0 * 60.0, 0.25]],
+        [
+            TpInstance {
+                time: 2 * 60,
+                pct: 0.75,
+            },
+            TpInstance {
+                time: 13 * 60,
+                pct: 0.25,
+            },
+        ],
     );
     tp_map.insert(
         TpCases::BinanceFuturesListing,
-        [[7.0, 0.5], [2.0 * 60.0, 0.5]],
+        [
+            TpInstance { time: 7, pct: 0.5 },
+            TpInstance {
+                time: 2 * 60,
+                pct: 0.5,
+            },
+        ],
     );
     if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
         let msg: Message = socket.next().await.expect("can't fetch data")?;
@@ -237,30 +313,36 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
         let (symbol, tp_case) = process_title(&tree_response.title)?;
 
-        info!(
-            "tp case = {:?}",
-            tp_map.get(&tp_case).unwrap_or(&[[0.0, 0.0], [0.0, 0.0]])
-        );
+        if tp_case != TpCases::NoListing {
+            let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
 
-        let trade_pair = format!("{}USDT", symbol);
+            let trade_pair = format!("{}USDT", symbol);
 
-        let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
+            let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
 
-        let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
+            let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
 
-        info!("leverage = {}", leverage);
+            info!("leverage = {}", leverage);
 
-        let price: f32 = get_price(client.clone(), &trade_pair).await?;
+            let price: f32 = get_price(client.clone(), &trade_pair).await?;
 
-        info!("price = {}", price);
+            info!("price = {}", price);
 
-        let qty = (size * leverage / price / qty_step).floor() * qty_step;
+            let qty = (size * leverage / price / qty_step).floor() * qty_step;
 
-        info!("qty = {}", qty);
+            info!("qty = {}", qty);
 
-        //market_futures_position(client.clone(), &trade_pair, "Buy", qty).await?;
-
-        //market_futures_position(client.clone(), &trade_pair, "Sell", qty).await?;
+            market_buy_futures_position(
+                client.clone(),
+                &trade_pair,
+                qty,
+                qty_step,
+                tp_instance_arr,
+            )
+            .await?;
+        } else {
+            info!("{}", &tree_response.title)
+        }
     } else {
         error!("Can't connect to test server");
     };
