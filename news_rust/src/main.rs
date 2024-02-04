@@ -16,18 +16,17 @@ use hex;
 use hmac::Mac;
 use log::{debug, error, info};
 use regex::Regex;
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::Client;
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    Client,
+};
 use serde_json::Value;
-use std::env;
-use std::error;
-use std::io::Read;
+use std::{collections::HashMap, env, error, io::Read};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::protocol::Message,
     tungstenite::{Error, Result},
 };
-use url::Url;
 
 fn construct_headers(payload: &str) -> HeaderMap {
     let api_key = env::var("testnet_bybit_order_key").expect("BYBIT_API_KEY not set");
@@ -81,6 +80,7 @@ async fn get_order_qty(client: Client, order_id: &str) -> Result<f32, Box<dyn er
     info!("qty = {}", order_json.result.list[0].cumExecQty);
     info!("fee = {}", order_json.result.list[0].cumExecFee);
 
+    //Remember to replace this with qty because standard account doesn't have these values
     let cum_exec_qty: f32 = order_json.result.list[0].cumExecQty.parse().unwrap();
     let cum_exec_fee: f32 = order_json.result.list[0].cumExecFee.parse().unwrap();
 
@@ -112,9 +112,9 @@ async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::E
     let res = client.get(&url).send().await?;
     let body = res.text().await?;
 
-    let v: PriceInformation = serde_json::from_str(&body)?;
+    let price_information: PriceInformation = serde_json::from_str(&body)?;
 
-    let value: f32 = v.result.list[0].lastPrice.parse().unwrap();
+    let value: f32 = price_information.result.list[0].lastPrice.parse().unwrap();
 
     Ok(value)
 }
@@ -130,9 +130,13 @@ async fn get_symbol_information(
     let res = client.get(&url).send().await?;
     let body = res.text().await?;
 
-    let v: SymbolInformation = serde_json::from_str(&body)?;
+    let symbol_information: SymbolInformation = serde_json::from_str(&body)?;
 
-    let value: f32 = v.result.list[0].lotSizeFilter.qtyStep.parse().unwrap();
+    let value: f32 = symbol_information.result.list[0]
+        .lotSizeFilter
+        .qtyStep
+        .parse()
+        .unwrap();
 
     Ok(value)
 }
@@ -166,6 +170,7 @@ async fn market_futures_position(
     Ok(())
 }
 
+#[derive(Eq, PartialEq, Hash)]
 enum TpCases {
     BinanceListing,
     UpbitListing,
@@ -210,6 +215,19 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         .init();
     let client = Client::new();
     let size: f32 = 200.0;
+    let mut tp_map = HashMap::new();
+    tp_map.insert(
+        TpCases::BinanceListing,
+        [[2.0 * 60.0, 0.75], [8.0 * 60.0, 0.25]],
+    );
+    tp_map.insert(
+        TpCases::UpbitListing,
+        [[2.0 * 60.0, 0.75], [13.0 * 60.0, 0.25]],
+    );
+    tp_map.insert(
+        TpCases::BinanceFuturesListing,
+        [[7.0, 0.5], [2.0 * 60.0, 0.5]],
+    );
     if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
         let msg: Message = socket.next().await.expect("can't fetch data")?;
 
@@ -219,11 +237,14 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
         let (symbol, tp_case) = process_title(&tree_response.title)?;
 
+        info!(
+            "tp case = {:?}",
+            tp_map.get(&tp_case).unwrap_or(&[[0.0, 0.0], [0.0, 0.0]])
+        );
+
         let trade_pair = format!("{}USDT", symbol);
 
         let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
-
-        info!("qty_step = {}", qty_step);
 
         let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
 
@@ -237,9 +258,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
         info!("qty = {}", qty);
 
-        market_futures_position(client.clone(), &trade_pair, "Buy", qty).await?;
+        //market_futures_position(client.clone(), &trade_pair, "Buy", qty).await?;
 
-        market_futures_position(client.clone(), &trade_pair, "Sell", qty).await?;
+        //market_futures_position(client.clone(), &trade_pair, "Sell", qty).await?;
     } else {
         error!("Can't connect to test server");
     };
