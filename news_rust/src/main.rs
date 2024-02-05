@@ -1,10 +1,12 @@
 mod order_information;
+mod order_response;
 mod position_list;
 mod price_information;
 mod symbol_information;
 mod tree_response;
 
 use order_information::OrderInformation;
+use order_response::OrderResponse;
 use position_list::PositionList;
 use price_information::PriceInformation;
 use symbol_information::SymbolInformation;
@@ -66,28 +68,6 @@ fn construct_headers(payload: &str) -> HeaderMap {
     headers
 }
 
-async fn get_order_qty(client: Client, order_id: &str) -> Result<f32, Box<dyn error::Error>> {
-    let params = format!("category=spot&order_id={}", order_id);
-    let url = format!("https://api-testnet.bybit.com/v5/order/history?{}", params);
-    let res = client
-        .get(&url)
-        .headers(construct_headers(&params))
-        .send()
-        .await?;
-    let body = res.text().await?;
-
-    let order_json: OrderInformation = serde_json::from_str(&body)?;
-
-    info!("qty = {}", order_json.result.list[0].cumExecQty);
-    info!("fee = {}", order_json.result.list[0].cumExecFee);
-
-    //Remember to replace this with qty because standard account doesn't have these values
-    let cum_exec_qty: f32 = order_json.result.list[0].cumExecQty.parse().unwrap();
-    let cum_exec_fee: f32 = order_json.result.list[0].cumExecFee.parse().unwrap();
-
-    Ok(cum_exec_qty - cum_exec_fee)
-}
-
 async fn get_leverage(client: Client, symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     let params = format!("category=linear&symbol={}", symbol);
     let url = format!("https://api-testnet.bybit.com/v5/position/list?{}", params);
@@ -142,6 +122,107 @@ async fn get_symbol_information(
     Ok(value)
 }
 
+async fn market_buy_spot_position(
+    client: Client,
+    symbol: &str,
+    unit_qty: f32,
+    qty_step: f32,
+    tp_instance_arr: &[TpInstance; 2],
+) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    let payload = format!(
+        r#"{{"category":"spot","symbol":"{}", "side":"Buy", "orderType":"Market","qty":"{}"}}"#,
+        symbol, unit_qty
+    );
+
+    if let Ok(res) = client
+        .post(url)
+        .headers(construct_headers(&payload))
+        .body(payload)
+        .send()
+        .await
+    {
+        let body = res.text().await?;
+
+        let order_response: Result<OrderResponse, _> = serde_json::from_str(&body);
+
+        if let Ok(order) = order_response {
+            if tp_instance_arr[0].time != 0 {
+                let qty = get_order_qty(client.clone(), &order.result.orderId).await?;
+                let price = get_price(client.clone(), symbol).await?;
+                info!("qty to sell = {}", qty);
+                info!("price = {}", price);
+
+                let tp_qty = (qty / price / qty_step).floor() * qty_step;
+                market_sell_position(client, symbol, tp_qty, qty_step, "spot", tp_instance_arr)
+                    .await?;
+            } else {
+                error!("Failed to sell {}", body);
+            }
+        } else {
+            error!("Failed to buy {}", body);
+        }
+    } else {
+        error!("Error in sending the spot order");
+    }
+
+    Ok(())
+}
+
+async fn market_sell_position(
+    client: Client,
+    symbol: &str,
+    qty: f32,
+    qty_step: f32,
+    category: &str,
+    tp_instance_arr: &[TpInstance; 2],
+) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    for tp in tp_instance_arr {
+        let seconds: u64 = tp.time as u64;
+        sleep(Duration::from_secs(seconds)).await;
+        let tp_pct = &tp.pct;
+        let tp_qty = ((qty / qty_step) * tp_pct).floor() * qty_step;
+        let payload = format!(
+            r#"{{"category":"{}","symbol":"{}","side":"Sell","orderType":"Market","qty":"{}"}}"#,
+            category, symbol, tp_qty
+        );
+
+        info!("payload = {}", payload);
+
+        let res = client
+            .post(url)
+            .headers(construct_headers(&payload))
+            .body(payload)
+            .send()
+            .await?;
+        let body = res.text().await?;
+
+        let v: Value = serde_json::from_str(&body)?;
+        info!("Sell Status = {}", v);
+    }
+    Ok(())
+}
+
+async fn get_order_qty(client: Client, order_id: &str) -> Result<f32, Box<dyn error::Error>> {
+    let params = format!("category=spot&order_id={}", order_id);
+    let url = format!("https://api-testnet.bybit.com/v5/order/history?{}", params);
+    let res = client
+        .get(&url)
+        .headers(construct_headers(&params))
+        .send()
+        .await?;
+    let body = res.text().await?;
+
+    let order_json: OrderInformation = serde_json::from_str(&body)?;
+
+    let qty: f32 = order_json.result.list[0].qty.parse().unwrap();
+
+    Ok(qty)
+}
+
 async fn market_buy_futures_position(
     client: Client,
     symbol: &str,
@@ -156,8 +237,6 @@ async fn market_buy_futures_position(
         symbol, qty
     );
 
-    info!("payload = {}", payload);
-
     if let Ok(res) = client
         .post(url)
         .headers(construct_headers(&payload))
@@ -170,47 +249,12 @@ async fn market_buy_futures_position(
         let v: Value = serde_json::from_str(&body)?;
         info!("v = {}", v);
         if tp_instance_arr[0].time != 0 {
-            market_sell_futures_position(client, symbol, qty, qty_step, tp_instance_arr).await?;
+            market_sell_position(client, symbol, qty, qty_step, "linear", tp_instance_arr).await?;
         } else {
-            info!("Failed to sell {}", v);
+            error!("Failed to sell {}", v);
         }
     } else {
-        error!("Error in market_buy_futures_position");
-    }
-    Ok(())
-}
-
-async fn market_sell_futures_position(
-    client: Client,
-    symbol: &str,
-    qty: f32,
-    qty_step: f32,
-    tp_instance_arr: &[TpInstance; 2],
-) -> Result<(), Box<dyn error::Error>> {
-    let url = "https://api-testnet.bybit.com/v5/order/create";
-
-    for tp in tp_instance_arr {
-        let seconds: u64 = tp.time as u64;
-        sleep(Duration::from_secs(seconds)).await;
-        let tp_pct = &tp.pct;
-        let tp_qty = ((qty / qty_step) * tp_pct).floor() * qty_step;
-        let payload = format!(
-            r#"{{"category":"linear","symbol":"{}","side":"Sell","orderType":"Market","qty":"{}"}}"#,
-            symbol, tp_qty
-        );
-
-        info!("payload = {}", payload);
-
-        let res = client
-            .post(url)
-            .headers(construct_headers(&payload))
-            .body(payload)
-            .send()
-            .await?;
-        let body = res.text().await?;
-
-        let v: Value = serde_json::from_str(&body)?;
-        info!("v = {}", v);
+        error!("Error in sending the futures order");
     }
     Ok(())
 }
@@ -332,14 +376,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
             info!("qty = {}", qty);
 
-            market_buy_futures_position(
-                client.clone(),
-                &trade_pair,
-                qty,
-                qty_step,
-                tp_instance_arr,
-            )
-            .await?;
+            //market_buy_futures_position(client.clone(), &trade_pair, qty, qty_step, tp_instance_arr)
+            market_buy_spot_position(client.clone(), &trade_pair, size, qty_step, tp_instance_arr)
+                .await?;
         } else {
             info!("{}", &tree_response.title)
         }
