@@ -17,4 +17,5 @@ pub struct OrderInformationResult {
 pub struct OrderInformationList {
     pub cumExecQty: String,
     pub cumExecFee: String,
+    pub qty: String,
 }
