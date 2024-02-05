@@ -13,7 +13,8 @@ use symbol_information::SymbolInformation;
 use tree_response::TreeResponse;
 
 use env_logger;
-use futures::{SinkExt, StreamExt};
+use fraction::{Decimal, Fraction};
+use futures::{executor, future, SinkExt, StreamExt};
 use hex;
 use hmac::Mac;
 use log::{debug, error, info};
@@ -154,7 +155,7 @@ async fn market_buy_spot_position(
                 info!("qty to sell = {}", qty);
                 info!("price = {}", price);
 
-                let tp_qty = (qty / price / qty_step).floor() * qty_step;
+                let tp_qty = ((qty / price) / qty_step).floor() * qty_step;
                 market_sell_position(client, symbol, tp_qty, qty_step, "spot", tp_instance_arr)
                     .await?;
             } else {
@@ -183,8 +184,10 @@ async fn market_sell_position(
     for tp in tp_instance_arr {
         let seconds: u64 = tp.time as u64;
         sleep(Duration::from_secs(seconds)).await;
-        let tp_pct = &tp.pct;
-        let tp_qty = ((qty / qty_step) * tp_pct).floor() * qty_step;
+        let tp_pct = Decimal::from(tp.pct);
+        let qty_step_dec = Decimal::from(qty_step);
+        let qty_dec = Decimal::from(qty);
+        let tp_qty = ((qty_dec / qty_step_dec) * tp_pct).floor() * qty_step_dec;
         let payload = format!(
             r#"{{"category":"{}","symbol":"{}","side":"Sell","orderType":"Market","qty":"{}"}}"#,
             category, symbol, tp_qty
@@ -201,7 +204,7 @@ async fn market_sell_position(
         let body = res.text().await?;
 
         let v: Value = serde_json::from_str(&body)?;
-        info!("Sell Status = {}", v);
+        info!("Sell Status = {}, Category = {}", v, category);
     }
     Ok(())
 }
@@ -247,7 +250,6 @@ async fn market_buy_futures_position(
         let body = res.text().await?;
 
         let v: Value = serde_json::from_str(&body)?;
-        info!("v = {}", v);
         if tp_instance_arr[0].time != 0 {
             market_sell_position(client, symbol, qty, qty_step, "linear", tp_instance_arr).await?;
         } else {
@@ -315,12 +317,14 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     tp_map.insert(
         TpCases::BinanceListing,
         [
+            //change the time to 2 * 60
             TpInstance {
-                time: 2 * 60,
+                time: 30,
                 pct: 0.75,
             },
+            // 8 * 60
             TpInstance {
-                time: 8 * 60,
+                time: 45,
                 pct: 0.25,
             },
         ],
@@ -376,9 +380,29 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
             info!("qty = {}", qty);
 
-            //market_buy_futures_position(client.clone(), &trade_pair, qty, qty_step, tp_instance_arr)
-            market_buy_spot_position(client.clone(), &trade_pair, size, qty_step, tp_instance_arr)
-                .await?;
+            let (_s, _g) = future::join(
+                async {
+                    market_buy_futures_position(
+                        client.clone(),
+                        &trade_pair,
+                        qty,
+                        qty_step,
+                        tp_instance_arr,
+                    )
+                    .await
+                },
+                async {
+                    market_buy_spot_position(
+                        client.clone(),
+                        &trade_pair,
+                        size,
+                        qty_step,
+                        tp_instance_arr,
+                    )
+                    .await
+                },
+            )
+            .await;
         } else {
             info!("{}", &tree_response.title)
         }
