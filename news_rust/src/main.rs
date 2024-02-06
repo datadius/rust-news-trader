@@ -286,6 +286,9 @@ fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
 
 fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
     let (re_string, tp_case) = title_case(title)?;
+    if tp_case == TpCases::NoListing {
+        return Ok(("", tp_case));
+    }
     let re = Regex::new(re_string)?;
     let symbol = re
         .captures(title)
@@ -384,7 +387,8 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         ],
     );
     loop {
-        if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
+        //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
+        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
             while let Some(msg) = socket.next().await {
                 let msg = msg.expect("Error while reading from tree socket");
 
@@ -397,9 +401,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
                     let (symbol, tp_case) = process_title(&tree_response.title)?;
 
-                    info!("symbol = {}", symbol);
-
                     if tp_case != TpCases::NoListing {
+                        info!("symbol = {}", symbol);
+
                         let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
 
                         let trade_pair = format!("{}USDT", symbol);
