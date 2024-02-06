@@ -32,49 +32,170 @@ use tokio_tungstenite::{
     tungstenite::{Error, Result},
 };
 
-fn construct_headers(payload: &str) -> HeaderMap {
-    let api_key = env::var("testnet_bybit_order_key").expect("BYBIT_API_KEY not set");
-    let api_secret = env::var("testnet_bybit_order_secret").expect("BYBIT_API_SECRET not set");
-    let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
-    let recv_window = "5000";
-    let to_sign = format!(
-        "{}{}{}{}",
-        &current_timestamp, &api_key, &recv_window, payload
-    );
-
-    let signature = {
-        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-        let mut mac = HmacSha256::new_from_slice(&api_secret.as_bytes())
-            .expect("HMAC can take key of any size");
-        mac.update(to_sign.as_bytes());
-        hex::encode(mac.finalize().into_bytes())
-    };
-
-    let mut headers = HeaderMap::new();
-    headers.insert("X-BAPI-API-KEY", HeaderValue::from_str(&api_key).unwrap());
-    headers.insert("X-BAPI-SIGN", HeaderValue::from_str(&signature).unwrap());
-    headers.insert(
-        "X-BAPI-TIMESTAMP",
-        HeaderValue::from_str(&current_timestamp).unwrap(),
-    );
-    headers.insert(
-        "X-BAPI-RECV-WINDOW",
-        HeaderValue::from_str(&recv_window).unwrap(),
-    );
-    headers.insert("Connection", HeaderValue::from_str("keep-alive").unwrap());
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_str("application/json").unwrap(),
-    );
-    headers
+#[derive(Eq, PartialEq, Hash)]
+enum TpCases {
+    BinanceListing,
+    UpbitListing,
+    BinanceFuturesListing,
+    NoListing,
 }
 
-async fn get_leverage(client: Client, symbol: &str) -> Result<f32, Box<dyn error::Error>> {
+#[derive(Copy, Clone)]
+struct TpInstance {
+    time: u64,
+    pct: f32,
+}
+const EMPTY_TP_CASE: [TpInstance; 2] = [TpInstance { time: 0, pct: 0.0 }; 2];
+
+async fn market_buy_futures_position(
+    client: Client,
+    symbol: &str,
+    qty: f32,
+    qty_step: f32,
+    tp_instance_arr: &[TpInstance; 2],
+    recv_window: &str,
+) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    let payload = format!(
+        r#"{{"category":"linear","symbol":"{}","side":"Buy","orderType":"Market","qty":"{}"}}"#,
+        symbol, qty
+    );
+
+    if let Ok(res) = client
+        .post(url)
+        .headers(construct_headers(&payload, recv_window))
+        .body(payload)
+        .send()
+        .await
+    {
+        let body = res.text().await?;
+
+        let v: Value = serde_json::from_str(&body)?;
+        if tp_instance_arr[0].time != 0 {
+            market_sell_position(
+                client,
+                symbol,
+                qty,
+                qty_step,
+                "linear",
+                tp_instance_arr,
+                recv_window,
+            )
+            .await?;
+        } else {
+            error!("Failed to sell {}", v);
+        }
+    } else {
+        error!("Error in sending the futures order");
+    }
+    Ok(())
+}
+
+async fn market_buy_spot_position(
+    client: Client,
+    symbol: &str,
+    unit_qty: f32,
+    qty_step: f32,
+    tp_instance_arr: &[TpInstance; 2],
+    recv_window: &str,
+) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    let payload = format!(
+        r#"{{"category":"spot","symbol":"{}", "side":"Buy", "orderType":"Market","qty":"{}"}}"#,
+        symbol, unit_qty
+    );
+
+    if let Ok(res) = client
+        .post(url)
+        .headers(construct_headers(&payload, recv_window))
+        .body(payload)
+        .send()
+        .await
+    {
+        let body = res.text().await?;
+
+        let order_response: Result<OrderResponse, _> = serde_json::from_str(&body);
+
+        if let Ok(order) = order_response {
+            if tp_instance_arr[0].time != 0 {
+                let qty = get_order_qty(client.clone(), &order.result.orderId, recv_window).await?;
+                let price = get_price(client.clone(), symbol).await?;
+
+                let tp_qty = ((qty / price) / qty_step).floor() * qty_step;
+                market_sell_position(
+                    client,
+                    symbol,
+                    tp_qty,
+                    qty_step,
+                    "spot",
+                    tp_instance_arr,
+                    recv_window,
+                )
+                .await?;
+            } else {
+                error!("Failed to sell {}", body);
+            }
+        } else {
+            error!("Failed to buy {}", body);
+        }
+    } else {
+        error!("Error in sending the spot order");
+    }
+
+    Ok(())
+}
+
+async fn market_sell_position(
+    client: Client,
+    symbol: &str,
+    qty: f32,
+    qty_step: f32,
+    category: &str,
+    tp_instance_arr: &[TpInstance; 2],
+    recv_window: &str,
+) -> Result<(), Box<dyn error::Error>> {
+    let url = "https://api-testnet.bybit.com/v5/order/create";
+
+    for tp in tp_instance_arr {
+        let seconds: u64 = tp.time as u64;
+        sleep(Duration::from_secs(seconds)).await;
+        let tp_pct = Decimal::from(tp.pct);
+        let qty_step_dec = Decimal::from(qty_step);
+        let qty_dec = Decimal::from(qty);
+        let tp_qty = ((qty_dec / qty_step_dec) * tp_pct).floor() * qty_step_dec;
+        let payload = format!(
+            r#"{{"category":"{}","symbol":"{}","side":"Sell","orderType":"Market","qty":"{}"}}"#,
+            category, symbol, tp_qty
+        );
+
+        info!("payload = {}", payload);
+
+        let res = client
+            .post(url)
+            .headers(construct_headers(&payload, recv_window))
+            .body(payload)
+            .send()
+            .await?;
+        let body = res.text().await?;
+
+        let v: Value = serde_json::from_str(&body)?;
+        info!("Sell Status = {}, Category = {}", v, category);
+    }
+    Ok(())
+}
+
+async fn get_leverage(
+    client: Client,
+    symbol: &str,
+    recv_window: &str,
+) -> Result<f32, Box<dyn error::Error>> {
     let params = format!("category=linear&symbol={}", symbol);
     let url = format!("https://api-testnet.bybit.com/v5/position/list?{}", params);
     let res = client
         .get(&url)
-        .headers(construct_headers(&params))
+        .headers(construct_headers(&params, recv_window))
         .send()
         .await?;
     let body = res.text().await?;
@@ -123,98 +244,16 @@ async fn get_symbol_information(
     Ok(value)
 }
 
-async fn market_buy_spot_position(
+async fn get_order_qty(
     client: Client,
-    symbol: &str,
-    unit_qty: f32,
-    qty_step: f32,
-    tp_instance_arr: &[TpInstance; 2],
-) -> Result<(), Box<dyn error::Error>> {
-    let url = "https://api-testnet.bybit.com/v5/order/create";
-
-    let payload = format!(
-        r#"{{"category":"spot","symbol":"{}", "side":"Buy", "orderType":"Market","qty":"{}"}}"#,
-        symbol, unit_qty
-    );
-
-    if let Ok(res) = client
-        .post(url)
-        .headers(construct_headers(&payload))
-        .body(payload)
-        .send()
-        .await
-    {
-        let body = res.text().await?;
-
-        let order_response: Result<OrderResponse, _> = serde_json::from_str(&body);
-
-        if let Ok(order) = order_response {
-            if tp_instance_arr[0].time != 0 {
-                let qty = get_order_qty(client.clone(), &order.result.orderId).await?;
-                let price = get_price(client.clone(), symbol).await?;
-                info!("qty to sell = {}", qty);
-                info!("price = {}", price);
-
-                let tp_qty = ((qty / price) / qty_step).floor() * qty_step;
-                market_sell_position(client, symbol, tp_qty, qty_step, "spot", tp_instance_arr)
-                    .await?;
-            } else {
-                error!("Failed to sell {}", body);
-            }
-        } else {
-            error!("Failed to buy {}", body);
-        }
-    } else {
-        error!("Error in sending the spot order");
-    }
-
-    Ok(())
-}
-
-async fn market_sell_position(
-    client: Client,
-    symbol: &str,
-    qty: f32,
-    qty_step: f32,
-    category: &str,
-    tp_instance_arr: &[TpInstance; 2],
-) -> Result<(), Box<dyn error::Error>> {
-    let url = "https://api-testnet.bybit.com/v5/order/create";
-
-    for tp in tp_instance_arr {
-        let seconds: u64 = tp.time as u64;
-        sleep(Duration::from_secs(seconds)).await;
-        let tp_pct = Decimal::from(tp.pct);
-        let qty_step_dec = Decimal::from(qty_step);
-        let qty_dec = Decimal::from(qty);
-        let tp_qty = ((qty_dec / qty_step_dec) * tp_pct).floor() * qty_step_dec;
-        let payload = format!(
-            r#"{{"category":"{}","symbol":"{}","side":"Sell","orderType":"Market","qty":"{}"}}"#,
-            category, symbol, tp_qty
-        );
-
-        info!("payload = {}", payload);
-
-        let res = client
-            .post(url)
-            .headers(construct_headers(&payload))
-            .body(payload)
-            .send()
-            .await?;
-        let body = res.text().await?;
-
-        let v: Value = serde_json::from_str(&body)?;
-        info!("Sell Status = {}, Category = {}", v, category);
-    }
-    Ok(())
-}
-
-async fn get_order_qty(client: Client, order_id: &str) -> Result<f32, Box<dyn error::Error>> {
+    order_id: &str,
+    recv_window: &str,
+) -> Result<f32, Box<dyn error::Error>> {
     let params = format!("category=spot&order_id={}", order_id);
     let url = format!("https://api-testnet.bybit.com/v5/order/history?{}", params);
     let res = client
         .get(&url)
-        .headers(construct_headers(&params))
+        .headers(construct_headers(&params, recv_window))
         .send()
         .await?;
     let body = res.text().await?;
@@ -225,56 +264,6 @@ async fn get_order_qty(client: Client, order_id: &str) -> Result<f32, Box<dyn er
 
     Ok(qty)
 }
-
-async fn market_buy_futures_position(
-    client: Client,
-    symbol: &str,
-    qty: f32,
-    qty_step: f32,
-    tp_instance_arr: &[TpInstance; 2],
-) -> Result<(), Box<dyn error::Error>> {
-    let url = "https://api-testnet.bybit.com/v5/order/create";
-
-    let payload = format!(
-        r#"{{"category":"linear","symbol":"{}","side":"Buy","orderType":"Market","qty":"{}"}}"#,
-        symbol, qty
-    );
-
-    if let Ok(res) = client
-        .post(url)
-        .headers(construct_headers(&payload))
-        .body(payload)
-        .send()
-        .await
-    {
-        let body = res.text().await?;
-
-        let v: Value = serde_json::from_str(&body)?;
-        if tp_instance_arr[0].time != 0 {
-            market_sell_position(client, symbol, qty, qty_step, "linear", tp_instance_arr).await?;
-        } else {
-            error!("Failed to sell {}", v);
-        }
-    } else {
-        error!("Error in sending the futures order");
-    }
-    Ok(())
-}
-
-#[derive(Eq, PartialEq, Hash)]
-enum TpCases {
-    BinanceListing,
-    UpbitListing,
-    BinanceFuturesListing,
-    NoListing,
-}
-
-#[derive(Copy, Clone)]
-struct TpInstance {
-    time: u64,
-    pct: f32,
-}
-const EMPTY_TP_CASE: [TpInstance; 2] = [TpInstance { time: 0, pct: 0.0 }; 2];
 
 fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
     if title.contains("Binance Will List") {
@@ -306,13 +295,54 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
     Ok((symbol, tp_case))
 }
 
+fn construct_headers(payload: &str, recv_window: &str) -> HeaderMap {
+    let api_key = env::var("testnet_bybit_order_key").expect("BYBIT_API_KEY not set");
+    let api_secret = env::var("testnet_bybit_order_secret").expect("BYBIT_API_SECRET not set");
+    let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
+    let to_sign = format!(
+        "{}{}{}{}",
+        &current_timestamp, &api_key, &recv_window, payload
+    );
+
+    let signature = {
+        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+        let mut mac = HmacSha256::new_from_slice(&api_secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(to_sign.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-BAPI-API-KEY", HeaderValue::from_str(&api_key).unwrap());
+    headers.insert("X-BAPI-SIGN", HeaderValue::from_str(&signature).unwrap());
+    headers.insert(
+        "X-BAPI-TIMESTAMP",
+        HeaderValue::from_str(&current_timestamp).unwrap(),
+    );
+    headers.insert(
+        "X-BAPI-RECV-WINDOW",
+        HeaderValue::from_str(&recv_window).unwrap(),
+    );
+    headers.insert("Connection", HeaderValue::from_str("keep-alive").unwrap());
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_str("application/json").unwrap(),
+    );
+    headers
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
+    let args: Vec<String> = env::args().collect();
+
     env_logger::Builder::new()
         .filter(None, log::LevelFilter::Info)
         .init();
     let client = Client::new();
-    let size: f32 = 200.0;
+    let size_future: f32 = args[1].parse().unwrap_or(0.0);
+    let size_spot: f32 = args[2].parse().unwrap_or(0.0);
+    let default_recv_window = &String::from("1000");
+    let recv_window: &str = args.get(3).unwrap_or(default_recv_window);
     let mut tp_map = HashMap::new();
     tp_map.insert(
         TpCases::BinanceListing,
@@ -368,7 +398,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
             let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
 
-            let leverage: f32 = get_leverage(client.clone(), &trade_pair).await?;
+            let leverage: f32 = get_leverage(client.clone(), &trade_pair, recv_window).await?;
 
             info!("leverage = {}", leverage);
 
@@ -376,7 +406,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
             info!("price = {}", price);
 
-            let qty = (size * leverage / price / qty_step).floor() * qty_step;
+            let qty = (size_future * leverage / price / qty_step).floor() * qty_step;
 
             info!("qty = {}", qty);
 
@@ -388,6 +418,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                         qty,
                         qty_step,
                         tp_instance_arr,
+                        recv_window,
                     )
                     .await
                 },
@@ -395,9 +426,10 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                     market_buy_spot_position(
                         client.clone(),
                         &trade_pair,
-                        size,
+                        size_spot,
                         qty_step,
                         tp_instance_arr,
+                        recv_window,
                     )
                     .await
                 },
