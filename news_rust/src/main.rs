@@ -71,7 +71,6 @@ async fn market_buy_futures_position(
     {
         let body = res.text().await?;
 
-        let v: Value = serde_json::from_str(&body)?;
         if tp_instance_arr[0].time != 0 {
             market_sell_position(
                 client,
@@ -84,7 +83,7 @@ async fn market_buy_futures_position(
             )
             .await?;
         } else {
-            error!("Failed to sell {}", v);
+            error!("Failed to sell {}", body);
         }
     } else {
         error!("Error in sending the futures order");
@@ -199,6 +198,8 @@ async fn get_leverage(
         .send()
         .await?;
     let body = res.text().await?;
+
+    info!("Leverage = {}", body);
 
     let leverage_json: PositionList = serde_json::from_str(&body)?;
 
@@ -382,65 +383,75 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
             },
         ],
     );
-    if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
-        let msg: Message = socket.next().await.expect("can't fetch data")?;
+    loop {
+        if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
+            while let Some(msg) = socket.next().await {
+                let msg = msg.expect("Error while reading from tree socket");
 
-        let response = msg.to_text()?;
+                if msg.is_text() {
+                    let response = msg.to_text()?;
 
-        let tree_response: TreeResponse = serde_json::from_str(&response)?;
+                    info!("Response = {}", response);
 
-        let (symbol, tp_case) = process_title(&tree_response.title)?;
+                    let tree_response: TreeResponse = serde_json::from_str(&response)?;
 
-        if tp_case != TpCases::NoListing {
-            let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
+                    let (symbol, tp_case) = process_title(&tree_response.title)?;
 
-            let trade_pair = format!("{}USDT", symbol);
+                    info!("symbol = {}", symbol);
 
-            let qty_step: f32 = get_symbol_information(client.clone(), &trade_pair).await?;
+                    if tp_case != TpCases::NoListing {
+                        let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
 
-            let leverage: f32 = get_leverage(client.clone(), &trade_pair, recv_window).await?;
+                        let trade_pair = format!("{}USDT", symbol);
 
-            info!("leverage = {}", leverage);
+                        let qty_step: f32 =
+                            get_symbol_information(client.clone(), &trade_pair).await?;
 
-            let price: f32 = get_price(client.clone(), &trade_pair).await?;
+                        let leverage: f32 =
+                            get_leverage(client.clone(), &trade_pair, recv_window).await?;
 
-            info!("price = {}", price);
+                        info!("leverage = {}", leverage);
 
-            let qty = (size_future * leverage / price / qty_step).floor() * qty_step;
+                        let price: f32 = get_price(client.clone(), &trade_pair).await?;
 
-            info!("qty = {}", qty);
+                        info!("price = {}", price);
 
-            let (_s, _g) = future::join(
-                async {
-                    market_buy_futures_position(
-                        client.clone(),
-                        &trade_pair,
-                        qty,
-                        qty_step,
-                        tp_instance_arr,
-                        recv_window,
-                    )
-                    .await
-                },
-                async {
-                    market_buy_spot_position(
-                        client.clone(),
-                        &trade_pair,
-                        size_spot,
-                        qty_step,
-                        tp_instance_arr,
-                        recv_window,
-                    )
-                    .await
-                },
-            )
-            .await;
+                        let qty = (size_future * leverage / price / qty_step).floor() * qty_step;
+
+                        info!("qty = {}", qty);
+
+                        let (_s, _g) = future::join(
+                            async {
+                                market_buy_futures_position(
+                                    client.clone(),
+                                    &trade_pair,
+                                    qty,
+                                    qty_step,
+                                    tp_instance_arr,
+                                    recv_window,
+                                )
+                                .await
+                            },
+                            async {
+                                market_buy_spot_position(
+                                    client.clone(),
+                                    &trade_pair,
+                                    size_spot,
+                                    qty_step,
+                                    tp_instance_arr,
+                                    recv_window,
+                                )
+                                .await
+                            },
+                        )
+                        .await;
+                    } else {
+                        info!("{}", &tree_response.title)
+                    }
+                }
+            }
         } else {
-            info!("{}", &tree_response.title)
-        }
-    } else {
-        error!("Can't connect to test server");
-    };
-
-    Ok(())
+            error!("Can't connect to test server");
+        };
+    }
 }
