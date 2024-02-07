@@ -450,7 +450,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                         )
                         .await;
                     } else {
-                        info!("{}", &tree_response.title)
+                        info!("Not a listing {}", &tree_response.title)
                     }
                 }
             }
