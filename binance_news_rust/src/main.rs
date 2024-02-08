@@ -90,6 +90,24 @@ fn generate_headers_and_signature(payload: &str) -> (HeaderMap, String) {
     headers.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key).unwrap());
     (headers, signature)
 }
+fn test_spot_generate_headers_and_signature(payload: &str) -> (HeaderMap, String) {
+    let api_key = env::var("test_spot_binance_order_key").expect("Binance_API_KEY not set");
+    let api_secret =
+        env::var("test_spot_binance_order_secret").expect("Binance_API_SECRET not set");
+    let to_sign = payload;
+
+    let signature = {
+        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+        let mut mac = HmacSha256::new_from_slice(&api_secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(to_sign.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key).unwrap());
+    (headers, signature)
+}
 
 async fn update_symbol_information(
     client: Client,
@@ -197,6 +215,42 @@ async fn market_buy_futures_position(
     }
 }
 
+async fn market_buy_spot_position(
+    client: Client,
+    symbol: &str,
+    unit_coin_qty: f32,
+    recv_window: &str,
+) -> Result<(), Box<dyn error::Error>> {
+    let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
+    let payload = format!(
+        "symbol={}&side=BUY&type=MARKET&quoteOrderQty={}&recvWindow={}&timestamp={}",
+        symbol, unit_coin_qty, recv_window, &current_timestamp
+    );
+    let (headers, signature) = test_spot_generate_headers_and_signature(&payload);
+    if let Ok(response) = client
+        .post("https://testnet.binance.vision/api/v3/order")
+        .query(&[
+            ("symbol", symbol),
+            ("side", "BUY"),
+            ("type", "MARKET"),
+            ("quoteOrderQty", &unit_coin_qty.to_string()),
+            ("recvWindow", recv_window),
+            ("timestamp", &current_timestamp),
+            ("signature", &signature),
+        ])
+        .headers(headers)
+        .send()
+        .await
+    {
+        let body = response.text().await?;
+        info!("Market buy spot position response: {}", body);
+        Ok(())
+    } else {
+        error!("Failed to market buy spot position for {}", symbol);
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
     env_logger::Builder::new()
@@ -206,6 +260,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let mut symbols_step_size: HashMap<String, f32> = HashMap::new();
     let recv_window = "5000";
     let size_future = 100.0;
+    let size_spot = 100.0;
     let client = Client::new();
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
 
@@ -217,6 +272,8 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     info!("Base coin qty: {}", base_coin_qty);
 
     market_buy_futures_position(client.clone(), "BTCUSDT", base_coin_qty, recv_window).await?;
+
+    market_buy_spot_position(client.clone(), "BTCUSDT", size_spot, recv_window).await?;
 
     Ok(())
 }
