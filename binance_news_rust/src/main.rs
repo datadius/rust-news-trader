@@ -74,8 +74,8 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
     Ok((symbol, tp_case))
 }
 fn generate_headers_and_signature(payload: &str) -> (HeaderMap, String) {
-    let api_key = env::var("binance_order_key").expect("Binance_API_KEY not set");
-    let api_secret = env::var("binance_order_secret").expect("Binance_API_SECRET not set");
+    let api_key = env::var("testnet_binance_order_key").expect("Binance_API_KEY not set");
+    let api_secret = env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set");
     let to_sign = payload;
 
     let signature = {
@@ -96,7 +96,7 @@ async fn update_symbol_information(
     symbols_step_size: &mut HashMap<String, f32>,
 ) -> Result<(), Box<dyn error::Error>> {
     if let Ok(response) = client
-        .get("https://fapi.binance.com/fapi/v1/exchangeInfo")
+        .get("https://testnet.binancefuture.com/fapi/v1/exchangeInfo")
         .send()
         .await
     {
@@ -113,7 +113,7 @@ async fn update_symbol_information(
 
 async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::Error>> {
     if let Ok(response) = client
-        .get("https://fapi.binance.com/fapi/v1/ticker/price")
+        .get("https://testnet.binancefuture.com/fapi/v1/ticker/price")
         .query(&[("symbol", symbol)])
         .send()
         .await
@@ -140,7 +140,7 @@ async fn get_trade_pair_leverage(
     );
     let (headers, signature) = generate_headers_and_signature(&payload);
     if let Ok(response) = client
-        .get("https://fapi.binance.com/fapi/v2/positionRisk")
+        .get("https://testnet.binancefuture.com/fapi/v2/positionRisk")
         .query(&[
             ("symbol", symbol),
             ("recvWindow", recv_window),
@@ -160,6 +160,43 @@ async fn get_trade_pair_leverage(
         Ok(0.0)
     }
 }
+
+async fn market_buy_futures_position(
+    client: Client,
+    symbol: &str,
+    base_coin_qty: f32,
+    recv_window: &str,
+) -> Result<(), Box<dyn error::Error>> {
+    let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
+    let payload = format!(
+        "symbol={}&side=BUY&type=MARKET&quantity={}&recvWindow={}&timestamp={}",
+        symbol, base_coin_qty, recv_window, &current_timestamp
+    );
+    let (headers, signature) = generate_headers_and_signature(&payload);
+    if let Ok(response) = client
+        .post("https://testnet.binancefuture.com/fapi/v1/order")
+        .query(&[
+            ("symbol", symbol),
+            ("side", "BUY"),
+            ("type", "MARKET"),
+            ("quantity", &base_coin_qty.to_string()),
+            ("recvWindow", recv_window),
+            ("timestamp", &current_timestamp),
+            ("signature", &signature),
+        ])
+        .headers(headers)
+        .send()
+        .await
+    {
+        let body = response.text().await?;
+        info!("Market buy futures position response: {}", body);
+        Ok(())
+    } else {
+        error!("Failed to market buy futures position for {}", symbol);
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
     env_logger::Builder::new()
@@ -168,13 +205,18 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
     let mut symbols_step_size: HashMap<String, f32> = HashMap::new();
     let recv_window = "5000";
+    let size_future = 100.0;
     let client = Client::new();
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
 
     let qty_step: f32 = symbols_step_size.get("BTCUSDT").unwrap_or(&0.0).to_owned();
     let price: f32 = get_price(client.clone(), "BTCUSDT").await?;
     let leverage: f32 = get_trade_pair_leverage(client.clone(), "BTCUSDT", recv_window).await?;
-    info!("leverage = {}", leverage);
+
+    let base_coin_qty = (size_future * leverage / price / qty_step).floor() * qty_step;
+    info!("Base coin qty: {}", base_coin_qty);
+
+    market_buy_futures_position(client.clone(), "BTCUSDT", base_coin_qty, recv_window).await?;
 
     Ok(())
 }
