@@ -343,8 +343,16 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         .filter(None, log::LevelFilter::Info)
         .init();
     let client = Client::new();
-    let size_future: f32 = args[1].parse().unwrap_or(0.0);
-    let size_spot: f32 = args[2].parse().unwrap_or(0.0);
+    let size_future: f32 = args
+        .get(1)
+        .expect("Input size for futures")
+        .parse()
+        .unwrap_or(0.0);
+    let size_spot: f32 = args
+        .get(2)
+        .unwrap_or(&String::from("0.0"))
+        .parse()
+        .unwrap_or(0.0);
     let default_recv_window = &String::from("1000");
     let recv_window: &str = args.get(3).unwrap_or(default_recv_window);
     let mut tp_map = HashMap::new();
@@ -390,7 +398,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
         if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
             while let Some(msg) = socket.next().await {
-                let msg = msg.expect("Error while reading from tree socket");
+                let msg = msg.unwrap_or(Message::binary(Vec::new()));
 
                 if msg.is_text() {
                     let response = msg.to_text()?;
