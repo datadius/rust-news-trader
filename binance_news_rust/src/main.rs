@@ -73,28 +73,18 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
 
     Ok((symbol, tp_case))
 }
-fn generate_headers_and_signature(payload: &str) -> (HeaderMap, String) {
-    let api_key = env::var("testnet_binance_order_key").expect("Binance_API_KEY not set");
-    let api_secret = env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set");
+fn generate_headers_and_signature(category: &str, payload: &str) -> (HeaderMap, String) {
     let to_sign = payload;
-
-    let signature = {
-        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-        let mut mac = HmacSha256::new_from_slice(&api_secret.as_bytes())
-            .expect("HMAC can take key of any size");
-        mac.update(to_sign.as_bytes());
-        hex::encode(mac.finalize().into_bytes())
+    let api_key = match category {
+        "spot" => env::var("test_spot_binance_order_key").expect("Binance_API_KEY not set"),
+        "futures" => env::var("testnet_binance_order_key").expect("Binance_API_KEY not set"),
+        _ => env::var("testnet_binance_order_key").expect("Binance_API_KEY not set"),
     };
-
-    let mut headers = HeaderMap::new();
-    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key).unwrap());
-    (headers, signature)
-}
-fn test_spot_generate_headers_and_signature(payload: &str) -> (HeaderMap, String) {
-    let api_key = env::var("test_spot_binance_order_key").expect("Binance_API_KEY not set");
-    let api_secret =
-        env::var("test_spot_binance_order_secret").expect("Binance_API_SECRET not set");
-    let to_sign = payload;
+    let api_secret = match category {
+        "spot" => env::var("test_spot_binance_order_secret").expect("Binance_API_SECRET not set"),
+        "futures" => env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set"),
+        _ => env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set"),
+    };
 
     let signature = {
         type HmacSha256 = hmac::Hmac<sha2::Sha256>;
@@ -156,7 +146,7 @@ async fn get_trade_pair_leverage(
         "symbol={}&recvWindow={}&timestamp={}",
         symbol, recv_window, &current_timestamp
     );
-    let (headers, signature) = generate_headers_and_signature(&payload);
+    let (headers, signature) = generate_headers_and_signature("futures", &payload);
     if let Ok(response) = client
         .get("https://testnet.binancefuture.com/fapi/v2/positionRisk")
         .query(&[
@@ -183,6 +173,8 @@ async fn market_buy_futures_position(
     client: Client,
     symbol: &str,
     base_coin_qty: f32,
+    qty_step: f32,
+    tp_instance_arr: &[TpInstance; 2],
     recv_window: &str,
 ) -> Result<(), Box<dyn error::Error>> {
     let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
@@ -190,7 +182,7 @@ async fn market_buy_futures_position(
         "symbol={}&side=BUY&type=MARKET&quantity={}&recvWindow={}&timestamp={}",
         symbol, base_coin_qty, recv_window, &current_timestamp
     );
-    let (headers, signature) = generate_headers_and_signature(&payload);
+    let (headers, signature) = generate_headers_and_signature("futures", &payload);
     if let Ok(response) = client
         .post("https://testnet.binancefuture.com/fapi/v1/order")
         .query(&[
@@ -208,6 +200,16 @@ async fn market_buy_futures_position(
     {
         let body = response.text().await?;
         info!("Market buy futures position response: {}", body);
+        market_sell_position(
+            client,
+            symbol,
+            base_coin_qty,
+            qty_step,
+            "futures",
+            tp_instance_arr,
+            recv_window,
+        )
+        .await?;
         Ok(())
     } else {
         error!("Failed to market buy futures position for {}", symbol);
@@ -219,6 +221,7 @@ async fn market_buy_spot_position(
     client: Client,
     symbol: &str,
     unit_coin_qty: f32,
+    tp_instance_arr: &[TpInstance; 2],
     recv_window: &str,
 ) -> Result<(), Box<dyn error::Error>> {
     let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
@@ -226,7 +229,7 @@ async fn market_buy_spot_position(
         "symbol={}&side=BUY&type=MARKET&quoteOrderQty={}&recvWindow={}&timestamp={}",
         symbol, unit_coin_qty, recv_window, &current_timestamp
     );
-    let (headers, signature) = test_spot_generate_headers_and_signature(&payload);
+    let (headers, signature) = generate_headers_and_signature("spot", &payload);
     if let Ok(response) = client
         .post("https://testnet.binance.vision/api/v3/order")
         .query(&[
@@ -244,6 +247,16 @@ async fn market_buy_spot_position(
     {
         let body = response.text().await?;
         info!("Market buy spot position response: {}", body);
+        market_sell_position(
+            client,
+            symbol,
+            unit_coin_qty,
+            0.0,
+            "spot",
+            tp_instance_arr,
+            recv_window,
+        )
+        .await?;
         Ok(())
     } else {
         error!("Failed to market buy spot position for {}", symbol);
@@ -251,11 +264,130 @@ async fn market_buy_spot_position(
     }
 }
 
+async fn market_sell_position(
+    client: Client,
+    symbol: &str,
+    qty: f32,
+    qty_step: f32,
+    category: &str,
+    tp_instance_arr: &[TpInstance; 2],
+    recv_window: &str,
+) -> Result<(), Box<dyn error::Error>> {
+    let url = match category {
+        "futures" => "https://testnet.binancefuture.com/fapi/v1/order",
+        "spot" => "https://testnet.binance.vision/api/v3/order",
+        _ => "",
+    };
+
+    for tp in tp_instance_arr {
+        let seconds: u64 = tp.time as u64;
+        sleep(Duration::from_secs(seconds)).await;
+        let tp_pct = Decimal::from(tp.pct);
+        let qty_step_dec = Decimal::from(qty_step);
+        let qty_dec = Decimal::from(qty);
+        let tp_qty = match category {
+            "futures" => ((qty_dec / qty_step_dec) * tp_pct).floor() * qty_step_dec,
+            "spot" => qty_dec * tp_pct,
+            _ => Decimal::from(0),
+        };
+        let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        let payload = match category {
+            "futures" => format!(
+                "symbol={}&side=SELL&type=MARKET&quantity={}&recvWindow={}&timestamp={}",
+                symbol, tp_qty, recv_window, &current_timestamp
+            ),
+            "spot" => format!(
+                "symbol={}&side=SELL&type=MARKET&quoteOrderQty={}&recvWindow={}&timestamp={}",
+                symbol, tp_qty, recv_window, &current_timestamp
+            ),
+            _ => "".to_string(),
+        };
+
+        let (headers, signature) = generate_headers_and_signature(category, &payload);
+
+        if let Ok(response) = client
+            .post(url)
+            .query(&[
+                ("symbol", symbol),
+                ("side", "SELL"),
+                ("type", "MARKET"),
+                ("quoteOrderQty", &tp_qty.to_string()),
+                ("recvWindow", recv_window),
+                ("timestamp", &current_timestamp),
+                ("signature", &signature),
+            ])
+            .headers(headers)
+            .send()
+            .await
+        {
+            let body = response.text().await?;
+            info!("Market sell position response: {}", body);
+        } else {
+            error!("Failed to market sell position for {}", symbol);
+        }
+    }
+
+    Ok(())
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
+    let args: Vec<String> = env::args().collect();
+
     env_logger::Builder::new()
         .filter(None, log::LevelFilter::Info)
         .init();
+    let client = Client::new();
+    let size_future: f32 = args
+        .get(1)
+        .expect("Input size for futures")
+        .parse()
+        .unwrap_or(0.0);
+    let size_spot: f32 = args
+        .get(2)
+        .unwrap_or(&String::from("0.0"))
+        .parse()
+        .unwrap_or(0.0);
+    let default_recv_window = &String::from("1000");
+    let recv_window: &str = args.get(3).unwrap_or(default_recv_window);
+    let mut tp_map = HashMap::new();
+    tp_map.insert(
+        TpCases::BinanceListing,
+        [
+            //change the time to 2 * 60
+            TpInstance {
+                time: 30,
+                pct: 0.75,
+            },
+            // 8 * 60
+            TpInstance {
+                time: 45,
+                pct: 0.25,
+            },
+        ],
+    );
+    tp_map.insert(
+        TpCases::UpbitListing,
+        [
+            TpInstance {
+                time: 2 * 60,
+                pct: 0.75,
+            },
+            TpInstance {
+                time: 13 * 60,
+                pct: 0.25,
+            },
+        ],
+    );
+    tp_map.insert(
+        TpCases::BinanceFuturesListing,
+        [
+            TpInstance { time: 7, pct: 0.5 },
+            TpInstance {
+                time: 2 * 60,
+                pct: 0.5,
+            },
+        ],
+    );
 
     let mut symbols_step_size: HashMap<String, f32> = HashMap::new();
     let recv_window = "5000";
@@ -264,16 +396,40 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let client = Client::new();
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
 
-    let qty_step: f32 = symbols_step_size.get("BTCUSDT").unwrap_or(&0.0).to_owned();
-    let price: f32 = get_price(client.clone(), "BTCUSDT").await?;
+    let (symbol, tp_case) = process_title("Binance Will List (BTC)")?;
+
+    let trade_pair = format!("{}USDT", symbol);
+
+    let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
+
+    let qty_step: f32 = symbols_step_size
+        .get(&trade_pair)
+        .unwrap_or(&0.0)
+        .to_owned();
+    let price: f32 = get_price(client.clone(), &trade_pair).await?;
     let leverage: f32 = get_trade_pair_leverage(client.clone(), "BTCUSDT", recv_window).await?;
 
     let base_coin_qty = (size_future * leverage / price / qty_step).floor() * qty_step;
     info!("Base coin qty: {}", base_coin_qty);
 
-    market_buy_futures_position(client.clone(), "BTCUSDT", base_coin_qty, recv_window).await?;
+    // market_buy_futures_position(
+    //     client.clone(),
+    //     &trade_pair,
+    //     base_coin_qty,
+    //     qty_step,
+    //     tp_instance_arr,
+    //     recv_window,
+    // )
+    // .await?;
 
-    market_buy_spot_position(client.clone(), "BTCUSDT", size_spot, recv_window).await?;
+    market_buy_spot_position(
+        client.clone(),
+        &trade_pair,
+        size_spot,
+        tp_instance_arr,
+        recv_window,
+    )
+    .await?;
 
     Ok(())
 }
