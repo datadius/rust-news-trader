@@ -449,7 +449,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                         )
                         .await;
                     } else {
-                        info!("No listing for {}", symbol);
+                        info!("No listing for {}", &tree_response.title);
                     }
                     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
                 }
