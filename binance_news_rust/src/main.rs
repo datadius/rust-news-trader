@@ -1,10 +1,12 @@
 mod position_leverage;
 mod price_information;
 mod symbols_exchange_info;
+mod tree_response;
 
 use position_leverage::PositionLeverage;
 use price_information::PriceInformation;
 use symbols_exchange_info::ExchangeInfo;
+use tree_response::TreeResponse;
 
 use env_logger;
 use fraction::{Decimal, Fraction};
@@ -390,46 +392,74 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     );
 
     let mut symbols_step_size: HashMap<String, f32> = HashMap::new();
-    let recv_window = "5000";
-    let size_future = 100.0;
-    let size_spot = 100.0;
-    let client = Client::new();
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
+    loop {
+        //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
+        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
+            while let Some(msg) = socket.next().await {
+                let msg = msg.unwrap_or(Message::binary(Vec::new()));
 
-    let (symbol, tp_case) = process_title("Binance Will List (BTC)")?;
+                if msg.is_text() {
+                    let response = msg.to_text()?;
 
-    let trade_pair = format!("{}USDT", symbol);
+                    info!("Response = {}", response);
 
-    let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
+                    let tree_response: TreeResponse = serde_json::from_str(&response)?;
 
-    let qty_step: f32 = symbols_step_size
-        .get(&trade_pair)
-        .unwrap_or(&0.0)
-        .to_owned();
-    let price: f32 = get_price(client.clone(), &trade_pair).await?;
-    let leverage: f32 = get_trade_pair_leverage(client.clone(), "BTCUSDT", recv_window).await?;
+                    let (symbol, tp_case) = process_title(&tree_response.title)?;
 
-    let base_coin_qty = (size_future * leverage / price / qty_step).floor() * qty_step;
-    info!("Base coin qty: {}", base_coin_qty);
+                    if tp_case != TpCases::NoListing {
+                        info!("symbol = {}", symbol);
 
-    // market_buy_futures_position(
-    //     client.clone(),
-    //     &trade_pair,
-    //     base_coin_qty,
-    //     qty_step,
-    //     tp_instance_arr,
-    //     recv_window,
-    // )
-    // .await?;
+                        let trade_pair = format!("{}USDT", symbol);
 
-    market_buy_spot_position(
-        client.clone(),
-        &trade_pair,
-        size_spot,
-        tp_instance_arr,
-        recv_window,
-    )
-    .await?;
+                        let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
 
-    Ok(())
+                        let qty_step: f32 = symbols_step_size
+                            .get(&trade_pair)
+                            .unwrap_or(&0.0)
+                            .to_owned();
+                        let price: f32 = get_price(client.clone(), &trade_pair).await?;
+                        let leverage: f32 =
+                            get_trade_pair_leverage(client.clone(), &trade_pair, recv_window)
+                                .await?;
+
+                        let base_coin_qty =
+                            (size_future * leverage / price / qty_step).floor() * qty_step;
+                        info!("Base coin qty: {}", base_coin_qty);
+
+                        let (_s, _g) = future::join(
+                            async {
+                                market_buy_futures_position(
+                                    client.clone(),
+                                    &trade_pair,
+                                    base_coin_qty,
+                                    qty_step,
+                                    tp_instance_arr,
+                                    recv_window,
+                                )
+                                .await
+                            },
+                            async {
+                                market_buy_spot_position(
+                                    client.clone(),
+                                    &trade_pair,
+                                    size_spot,
+                                    tp_instance_arr,
+                                    recv_window,
+                                )
+                                .await
+                            },
+                        )
+                        .await;
+                    } else {
+                        info!("No listing for {}", symbol);
+                    }
+                    update_symbol_information(client.clone(), &mut symbols_step_size).await?;
+                }
+            }
+        } else {
+            error!("Failed to connect to the server");
+        };
+    }
 }
