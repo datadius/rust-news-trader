@@ -13,24 +13,19 @@ use symbol_information::SymbolInformation;
 use tree_response::TreeResponse;
 
 use env_logger;
-use fraction::{Decimal, Fraction};
-use futures::{executor, future, SinkExt, StreamExt};
+use fraction::Decimal;
+use futures::{future, StreamExt};
 use hex;
 use hmac::Mac;
-use log::{debug, error, info};
+use log::{error, info};
 use regex::Regex;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client,
 };
-use serde_json::Value;
-use std::{collections::HashMap, env, error, io::Read};
+use std::{collections::HashMap, env, error};
 use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::protocol::Message,
-    tungstenite::{Error, Result},
-};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, tungstenite::Result};
 
 #[derive(Eq, PartialEq, Hash)]
 enum TpCases {
@@ -179,8 +174,7 @@ async fn market_sell_position(
             .await?;
         let body = res.text().await?;
 
-        let v: Value = serde_json::from_str(&body)?;
-        info!("Sell Status = {}, Category = {}", v, category);
+        info!("Sell Status = {}, Category = {}", &body, category);
     }
     Ok(())
 }
