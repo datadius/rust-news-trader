@@ -65,7 +65,7 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
     let re = Regex::new(re_string)?;
     let symbol = re
         .captures(title)
-        .unwrap()
+        .expect("Failed to apply regex on title")
         .get(1)
         .map_or("", |m| m.as_str());
 
@@ -93,7 +93,7 @@ fn generate_headers_and_signature(category: &str, payload: &str) -> (HeaderMap, 
     };
 
     let mut headers = HeaderMap::new();
-    headers.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key).unwrap());
+        headers.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key).expect("Issue processing api key"));
     (headers, signature)
 }
 
@@ -126,7 +126,7 @@ async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::E
     {
         let body = response.text().await?;
         let price_information: PriceInformation = serde_json::from_str(&body)?;
-        let price = price_information.price.parse::<f32>().unwrap();
+        let price = price_information.price.parse::<f32>().unwrap_or(0.0);
         Ok(price)
     } else {
         error!("Failed to get price for {}", symbol);
