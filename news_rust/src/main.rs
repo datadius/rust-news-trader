@@ -197,7 +197,7 @@ async fn get_leverage(
 
     let leverage_json: PositionList = serde_json::from_str(&body)?;
 
-    let value: f32 = leverage_json.result.list[0].leverage.parse().unwrap();
+    let value: f32 = leverage_json.result.list[0].leverage.parse().expect("Issue parsing the leverage to f32");
 
     Ok(value)
 }
@@ -212,7 +212,7 @@ async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::E
 
     let price_information: PriceInformation = serde_json::from_str(&body)?;
 
-    let value: f32 = price_information.result.list[0].lastPrice.parse().unwrap();
+    let value: f32 = price_information.result.list[0].lastPrice.parse().expect("Issue parsing the price");
 
     Ok(value)
 }
@@ -234,7 +234,7 @@ async fn get_symbol_information(
         .lotSizeFilter
         .qtyStep
         .parse()
-        .unwrap();
+        .expect("Issue parsing the qty step");
 
     Ok(value)
 }
@@ -255,7 +255,7 @@ async fn get_order_qty(
 
     let order_json: OrderInformation = serde_json::from_str(&body)?;
 
-    let qty: f32 = order_json.result.list[0].qty.parse().unwrap();
+    let qty: f32 = order_json.result.list[0].qty.parse().expect("Issue parsing the qty");
 
     Ok(qty)
 }
@@ -286,7 +286,7 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
     let re = Regex::new(re_string)?;
     let symbol = re
         .captures(title)
-        .unwrap()
+        .expect("Issue applying the regex on title")
         .get(1)
         .map_or("", |m| m.as_str());
 
@@ -311,20 +311,20 @@ fn construct_headers(payload: &str, recv_window: &str) -> HeaderMap {
     };
 
     let mut headers = HeaderMap::new();
-    headers.insert("X-BAPI-API-KEY", HeaderValue::from_str(&api_key).unwrap());
-    headers.insert("X-BAPI-SIGN", HeaderValue::from_str(&signature).unwrap());
+    headers.insert("X-BAPI-API-KEY", HeaderValue::from_str(&api_key).expect("Issue processing the api key"));
+    headers.insert("X-BAPI-SIGN", HeaderValue::from_str(&signature).expect("Issue processing the signature"));
     headers.insert(
         "X-BAPI-TIMESTAMP",
-        HeaderValue::from_str(&current_timestamp).unwrap(),
+        HeaderValue::from_str(&current_timestamp).expect("Issue processing the timestamp"),
     );
     headers.insert(
         "X-BAPI-RECV-WINDOW",
-        HeaderValue::from_str(&recv_window).unwrap(),
+        HeaderValue::from_str(&recv_window).expect("Issue processing the recv window"),
     );
-    headers.insert("Connection", HeaderValue::from_str("keep-alive").unwrap());
+    headers.insert("Connection", HeaderValue::from_str("keep-alive").expect("Issue processing the keep alive"));
     headers.insert(
         "Content-Type",
-        HeaderValue::from_str("application/json").unwrap(),
+        HeaderValue::from_str("application/json").expect("Issue processing application/json"),
     );
     headers
 }
