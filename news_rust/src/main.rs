@@ -18,7 +18,7 @@ use futures::{future, StreamExt};
 use hex;
 use hmac::Mac;
 use log::{error, info};
-use regex::Regex;
+use fancy_regex::Regex;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client,
@@ -268,7 +268,7 @@ fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
             r#"\([\d]*([^()]+[^(\u3131-\u314e|\u314f-\u3163|\uac00-\ud7a3)])\)"#,
             TpCases::UpbitListing,
         ))
-    } else if title.contains("Binance Futures Will Launch") {
+    } else if title.contains("Binance Futures Will Launch USDⓈ-M") {
         Ok((
             r#"(?<=USDⓈ-M )\d*(.*)(?= Perpetual)"#,
             TpCases::BinanceFuturesListing,
@@ -287,6 +287,7 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
     let symbol = re
         .captures(title)
         .expect("Issue applying the regex on title")
+        .expect("Issue capturing the symbol")
         .get(1)
         .map_or("", |m| m.as_str());
 

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod test;
+
 mod position_leverage;
 mod price_information;
 mod symbols_exchange_info;
@@ -14,7 +17,7 @@ use futures::{future, StreamExt};
 use hex;
 use hmac::Mac;
 use log::{error, info};
-use regex::Regex;
+use fancy_regex::Regex;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client,
@@ -24,7 +27,7 @@ use std::{collections::HashMap, env, error};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, tungstenite::Result};
 
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Eq, PartialEq, Hash, Debug)]
 enum TpCases {
     BinanceListing,
     UpbitListing,
@@ -47,7 +50,7 @@ fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
             r#"\([\d]*([^()]+[^(\u3131-\u314e|\u314f-\u3163|\uac00-\ud7a3)])\)"#,
             TpCases::UpbitListing,
         ))
-    } else if title.contains("Binance Futures Will Launch") {
+    } else if title.contains("Binance Futures Will Launch USDⓈ-M") {
         Ok((
             r#"(?<=USDⓈ-M )\d*(.*)(?= Perpetual)"#,
             TpCases::BinanceFuturesListing,
@@ -66,6 +69,7 @@ fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> 
     let symbol = re
         .captures(title)
         .expect("Failed to apply regex on title")
+        .expect("Failed to capture title")
         .get(1)
         .map_or("", |m| m.as_str());
 
@@ -459,3 +463,4 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         };
     }
 }
+
