@@ -32,6 +32,7 @@ enum TpCases {
     BinanceListing,
     UpbitListing,
     BinanceFuturesListing,
+    BithumbListing,
     NoListing,
 }
 
@@ -273,6 +274,8 @@ fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
             r#"(?<=USDⓈ-M )\d*(.*)(?= Perpetual)"#,
             TpCases::BinanceFuturesListing,
         ))
+    } else if title.contains("원화 마켓 추가") {
+        Ok((r#"\([\d]*([^()]+)\)"#, TpCases::BithumbListing))
     } else {
         Ok(("", TpCases::NoListing))
     }
@@ -386,6 +389,19 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
             TpInstance {
                 time: 2 * 60,
                 pct: 0.5,
+            },
+        ],
+    );
+    tp_map.insert(
+        TpCases::BithumbListing,
+        [
+            TpInstance {
+                time: 90,
+                pct: 1.0,
+            },
+            TpInstance {
+                time: 0,
+                pct: 0.0,
             },
         ],
     );
