@@ -22,6 +22,12 @@ fn test_process_title_variants() {
     assert_eq!("ZETA",symbol);
     assert_eq!(TpCases::BinanceFuturesListing, tp_case);
 
+    let title_binance_futures_1000sats = "Binance Futures Will Launch USDⓈ-M 1000SATS Perpetual Contract With Up to 50x Leverage";
+    let (symbol, tp_case) = process_title(title_binance_futures_1000sats).expect("Error processing binance futures listing");
+
+    assert_eq!("SATS",symbol);
+    assert_eq!(TpCases::BinanceFuturesListing, tp_case);
+
     let title_empty = "";
     let (symbol, tp_case) = process_title(title_empty).expect("Error processing empty title");
 
@@ -34,4 +40,11 @@ fn test_process_title_variants() {
 
     assert_eq!("",symbol);
     assert_eq!(TpCases::NoListing, tp_case);
+
+    let title_bithumb_text = "맨틀(MNT) 원화 마켓 추가";
+    let (symbol, tp_case) = process_title(title_bithumb_text).expect("Error processing bithumb text");
+
+    assert_eq!("MNT",symbol);
+    assert_eq!(TpCases::BithumbListing, tp_case);
+
 }
