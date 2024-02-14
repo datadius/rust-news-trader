@@ -1,10 +1,21 @@
 use super::process_title;
 use super::generate_headers_and_signature;
 use super::TpCases;
-use reqwest::header::{HeaderMap, HeaderValue};
-use std::{collections::HashMap, env, error};
+use super::update_symbol_information;
+use fraction::Decimal;
+use futures::{future, StreamExt};
 use hex;
 use hmac::Mac;
+use log::{error, info};
+use fancy_regex::Regex;
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    Client,
+};
+
+use std::{collections::HashMap, env, error};
+use tokio::time::{sleep, Duration};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, tungstenite::Result};
 
 #[test]
 fn test_process_title_variants() {
@@ -117,4 +128,30 @@ fn test_generate_headers_and_signature() {
         assert_eq!(headers_other, headers);
         assert_eq!(signature_other, signature);
     }
+}
+
+#[tokio::test]
+async fn test_symbol_hashmap() -> Result<(), Box<dyn error::Error>> {
+    let client = Client::new();
+    let mut symbols_step_size: HashMap<String, f32> = HashMap::new();
+    update_symbol_information(client.clone(), &mut symbols_step_size).await?;
+
+    let mut trade_pair_assert_hashmap : HashMap<String, f32> = HashMap::new();
+
+    trade_pair_assert_hashmap.insert("BTCUSDT".to_string(), 0.001);
+    trade_pair_assert_hashmap.insert("".to_string(), 0.0);
+    trade_pair_assert_hashmap.insert("PYTHUSDT".to_string(), 1.0);
+    trade_pair_assert_hashmap.insert("ETCUSDT".to_string(), 0.01);
+    trade_pair_assert_hashmap.insert("TWTUSDT".to_string(), 0.1);
+
+    for (trade_pair, qty_step_assert) in trade_pair_assert_hashmap {
+        let qty_step: f32 = symbols_step_size
+                            .get(&trade_pair)
+                            .unwrap_or(&0.0)
+                            .to_owned();
+        assert_eq!(qty_step_assert, qty_step);
+    }
+
+    Ok(())
+
 }
