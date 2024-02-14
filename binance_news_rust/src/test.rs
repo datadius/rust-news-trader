@@ -3,6 +3,7 @@ use super::generate_headers_and_signature;
 use super::TpCases;
 use super::update_symbol_information;
 use super::get_price;
+use super::get_trade_pair_leverage;
 use fraction::Decimal;
 use futures::{future, StreamExt};
 use hex;
@@ -177,6 +178,31 @@ async fn test_get_price() -> Result<(), Box<dyn error::Error>> {
     let price_invalid = get_price(client.clone(), trade_pair_invalid).await?;
 
     assert_eq!(price_invalid, 0.0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_get_leverage() -> Result<(), Box<dyn error::Error>> {
+    let client = Client::new();
+    let trade_pair = "BTCUSDT";
+    let recv_window = "5000";
+
+    let leverage = get_trade_pair_leverage(client.clone(), trade_pair, recv_window).await?;
+
+    assert_ne!(leverage, 0.0);
+
+    let trade_pair_empty = "";
+
+    let leverage_empty = get_trade_pair_leverage(client.clone(), trade_pair_empty, recv_window).await?;
+
+    assert_eq!(leverage_empty, 20.0);
+
+    let trade_pair_invalid = "INVALID";
+
+    let leverage_invalid = get_trade_pair_leverage(client.clone(), trade_pair_invalid, recv_window).await?;
+
+    assert_eq!(leverage_invalid, 0.0);
 
     Ok(())
 }
