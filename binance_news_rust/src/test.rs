@@ -2,6 +2,7 @@ use super::process_title;
 use super::generate_headers_and_signature;
 use super::TpCases;
 use super::update_symbol_information;
+use super::get_price;
 use fraction::Decimal;
 use futures::{future, StreamExt};
 use hex;
@@ -154,4 +155,28 @@ async fn test_symbol_hashmap() -> Result<(), Box<dyn error::Error>> {
 
     Ok(())
 
+}
+
+#[tokio::test]
+async fn test_get_price() -> Result<(), Box<dyn error::Error>> {
+    let client = Client::new();
+    let trade_pair = "BTCUSDT";
+
+    let price = get_price(client.clone(), trade_pair).await?;
+
+    assert_ne!(price, 0.0);
+
+    let trade_pair_empty = "";
+
+    let price_empty = get_price(client.clone(), trade_pair_empty).await?;
+
+    assert_eq!(price_empty, 0.0);
+
+    let trade_pair_invalid = "INVALID";
+
+    let price_invalid = get_price(client.clone(), trade_pair_invalid).await?;
+
+    assert_eq!(price_invalid, 0.0);
+
+    Ok(())
 }
