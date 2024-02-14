@@ -132,7 +132,9 @@ async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::E
         .await
     {
         let body = response.text().await?;
-        let price_information: PriceInformation = serde_json::from_str(&body)?;
+        let price_information: PriceInformation = serde_json::from_str(&body).unwrap_or(PriceInformation {
+            price: "0.0".to_string(),
+        });
         let price = price_information.price.parse::<f32>().unwrap_or(0.0);
         Ok(price)
     } else {
@@ -152,6 +154,8 @@ async fn get_trade_pair_leverage(
         symbol, recv_window, &current_timestamp
     );
     let (headers, signature) = generate_headers_and_signature("futures", &payload);
+    // Blank "" will return leverage 20, which is the default. Could be a bug due to it being the
+    // test environment
     if let Ok(response) = client
         .get("https://testnet.binancefuture.com/fapi/v2/positionRisk")
         .query(&[
@@ -165,7 +169,9 @@ async fn get_trade_pair_leverage(
         .await
     {
         let body = response.text().await?;
-        let position_risk: Vec<PositionLeverage> = serde_json::from_str(&body)?;
+        let position_risk: Vec<PositionLeverage> = serde_json::from_str(&body).unwrap_or(vec![PositionLeverage {
+            leverage: "0.0".to_string(),
+        }]);
         let leverage = position_risk[0].leverage.parse::<f32>().unwrap_or(0.0);
         Ok(leverage)
     } else {
@@ -358,14 +364,12 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     tp_map.insert(
         TpCases::BinanceListing,
         [
-            //change the time to 2 * 60
             TpInstance {
-                time: 30,
+                time: 2*60,
                 pct: 0.75,
             },
-            // 8 * 60
             TpInstance {
-                time: 45,
+                time: 8 * 60,
                 pct: 0.25,
             },
         ],
@@ -417,8 +421,6 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
                 if msg.is_text() {
                     let response = msg.to_text()?;
-
-                    info!("Response = {}", response);
 
                     let tree_response: TreeResponse = serde_json::from_str(&response)?;
 
