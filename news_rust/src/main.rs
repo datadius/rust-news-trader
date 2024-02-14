@@ -196,7 +196,13 @@ async fn get_leverage(
 
     info!("Leverage = {}", body);
 
-    let leverage_json: PositionList = serde_json::from_str(&body)?;
+    let leverage_json: PositionList = serde_json::from_str(&body).unwrap_or(PositionList {
+        result: position_list::Result {
+            list: vec!(position_list::LeverageList {
+                leverage: "0.0".to_string(),
+            }),
+        }
+    });
 
     let value: f32 = leverage_json.result.list[0].leverage.parse().expect("Issue parsing the leverage to f32");
 
@@ -211,7 +217,13 @@ async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::E
     let res = client.get(&url).send().await?;
     let body = res.text().await?;
 
-    let price_information: PriceInformation = serde_json::from_str(&body)?;
+    let price_information: PriceInformation = serde_json::from_str(&body).unwrap_or(PriceInformation {
+        result: price_information::PriceInformationResult {
+            list: vec!(price_information::PriceInformationList {
+                lastPrice: "0.0".to_string(),
+            }),
+        }
+    });
 
     let value: f32 = price_information.result.list[0].lastPrice.parse().expect("Issue parsing the price");
 
