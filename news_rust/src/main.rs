@@ -428,7 +428,14 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
                     info!("Response = {}", response);
 
-                    let tree_response: TreeResponse = serde_json::from_str(&response)?;
+                    let tree_response: TreeResponse = match serde_json::from_str(&response) {
+                        Ok(tree_response) => tree_response,
+                        Err(e) => {
+                            info!("Failed to parse tree response: {}", response);
+                            error!("Failed to parse tree response: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
 
                     let (symbol, tp_case) = process_title(&tree_response.title)?;
 
