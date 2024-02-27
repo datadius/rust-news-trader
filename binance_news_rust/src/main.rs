@@ -411,7 +411,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
     loop {
         //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
-        if let Ok((mut socket, _)) = connect_async("ws://35.73.200.147:5050").await {
+        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
             while let Some(msg) = socket.next().await {
                 let msg = msg.unwrap_or(Message::binary(Vec::new()));
 
