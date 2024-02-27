@@ -13,7 +13,9 @@ use tree_response::TreeResponse;
 
 use fancy_regex::Regex;
 use fraction::Decimal;
-use futures::{future, StreamExt};
+use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use hmac::Mac;
 use log::{error, info};
 use reqwest::{
@@ -22,6 +24,7 @@ use reqwest::{
 };
 
 use std::{collections::HashMap, env, error};
+use tokio::task::yield_now;
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, tungstenite::Result};
 
@@ -45,10 +48,7 @@ fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
     if title.contains("Binance Will List") {
         Ok((r#"\([\d]*([^()]+)\)"#, TpCases::BinanceListing))
     } else if title.contains("마켓 디지털 자산 추가") {
-        Ok((
-            r#"\([\d]*([^()]+[^(\u3131-\u314e|\u314f-\u3163|\uac00-\ud7a3)])\)"#,
-            TpCases::UpbitListing,
-        ))
+        Ok((r#"[\( ](\w*)[,\)]"#, TpCases::UpbitListing))
     } else if title.contains("Binance Futures Will Launch USDⓈ-M") {
         Ok((
             r#"(?<=USDⓈ-M )\d*(.*)(?= Perpetual)"#,
@@ -61,20 +61,22 @@ fn title_case(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
     }
 }
 
-fn process_title(title: &str) -> Result<(&str, TpCases), Box<dyn error::Error>> {
+fn process_title(title: &str) -> Result<(Vec<&str>, TpCases), Box<dyn error::Error>> {
     let (re_string, tp_case) = title_case(title)?;
     if tp_case == TpCases::NoListing {
-        return Ok(("", tp_case));
+        return Ok((vec![""], tp_case));
     }
     let re = Regex::new(re_string)?;
-    let symbol = re
-        .captures(title)
-        .expect("Failed to apply regex on title")
-        .expect("Failed to capture title")
-        .get(1)
-        .map_or("", |m| m.as_str());
+    let symbols = re
+        .captures_iter(title)
+        .flatten()
+        .map(|m| m.get(1).expect("There was no group found"))
+        .map(|m| m.as_str())
+        .collect();
 
-    Ok((symbol, tp_case))
+    info!("Symbol: {:?}", symbols);
+
+    Ok((symbols, tp_case))
 }
 fn generate_headers_and_signature(category: &str, payload: &str) -> (HeaderMap, String) {
     let to_sign = payload;
@@ -185,12 +187,17 @@ async fn get_trade_pair_leverage(
 
 async fn market_buy_futures_position(
     client: Client,
-    symbol: &str,
-    base_coin_qty: f32,
+    symbol: String,
+    size_future: f32,
     qty_step: f32,
     tp_instance_arr: &[TpInstance; 2],
     recv_window: &str,
 ) -> Result<(), Box<dyn error::Error>> {
+    let price: f32 = get_price(client.clone(), &symbol).await?;
+    let leverage: f32 = get_trade_pair_leverage(client.clone(), &symbol, recv_window).await?;
+
+    let base_coin_qty = (size_future * leverage / price / qty_step).floor() * qty_step;
+    info!("Base coin qty: {}", base_coin_qty);
     let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
     let payload = format!(
         "symbol={}&side=BUY&type=MARKET&quantity={}&recvWindow={}&timestamp={}",
@@ -200,7 +207,7 @@ async fn market_buy_futures_position(
     if let Ok(response) = client
         .post("https://testnet.binancefuture.com/fapi/v1/order")
         .query(&[
-            ("symbol", symbol),
+            ("symbol", symbol.as_str()),
             ("side", "BUY"),
             ("type", "MARKET"),
             ("quantity", &base_coin_qty.to_string()),
@@ -216,7 +223,7 @@ async fn market_buy_futures_position(
         info!("Market buy futures position response: {}", body);
         market_sell_position(
             client,
-            symbol,
+            &symbol,
             base_coin_qty,
             qty_step,
             "futures",
@@ -233,7 +240,7 @@ async fn market_buy_futures_position(
 
 async fn market_buy_spot_position(
     client: Client,
-    symbol: &str,
+    symbol: String,
     unit_coin_qty: f32,
     tp_instance_arr: &[TpInstance; 2],
     recv_window: &str,
@@ -247,7 +254,7 @@ async fn market_buy_spot_position(
     if let Ok(response) = client
         .post("https://testnet.binance.vision/api/v3/order")
         .query(&[
-            ("symbol", symbol),
+            ("symbol", symbol.as_str()),
             ("side", "BUY"),
             ("type", "MARKET"),
             ("quoteOrderQty", &unit_coin_qty.to_string()),
@@ -263,7 +270,7 @@ async fn market_buy_spot_position(
         info!("Market buy spot position response: {}", body);
         market_sell_position(
             client,
-            symbol,
+            &symbol,
             unit_coin_qty,
             0.0,
             "spot",
@@ -411,7 +418,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
     loop {
         //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
-        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
+        if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
             while let Some(msg) = socket.next().await {
                 let msg = msg.unwrap_or(Message::binary(Vec::new()));
 
@@ -427,52 +434,33 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                         }
                     };
 
-                    let (symbol, tp_case) = process_title(&tree_response.title)?;
+                    let (symbols, tp_case) = process_title(&tree_response.title)?;
 
+                    info!("symbols = {:?}", symbols);
                     if tp_case != TpCases::NoListing {
-                        info!("symbol = {}", symbol);
+                        let handles = symbols.iter().map(|symbol| {
+                            info!("symbol = {}", symbol);
 
-                        let trade_pair = format!("{}USDT", symbol);
+                            let trade_pair = format!("{}USDT", symbol);
 
-                        let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
+                            let tp_instance_arr = tp_map.get(&tp_case).unwrap_or(&EMPTY_TP_CASE);
 
-                        let qty_step: f32 = symbols_step_size
-                            .get(&trade_pair)
-                            .unwrap_or(&0.0)
-                            .to_owned();
-                        let price: f32 = get_price(client.clone(), &trade_pair).await?;
-                        let leverage: f32 =
-                            get_trade_pair_leverage(client.clone(), &trade_pair, recv_window)
-                                .await?;
+                            let qty_step: f32 = symbols_step_size
+                                .get(&trade_pair)
+                                .unwrap_or(&0.0)
+                                .to_owned();
 
-                        let base_coin_qty =
-                            (size_future * leverage / price / qty_step).floor() * qty_step;
-                        info!("Base coin qty: {}", base_coin_qty);
+                            market_buy_futures_position(
+                                client.clone(),
+                                trade_pair.clone(),
+                                size_future,
+                                qty_step,
+                                tp_instance_arr,
+                                recv_window,
+                            )
+                        });
 
-                        let (_s, _g) = future::join(
-                            async {
-                                market_buy_futures_position(
-                                    client.clone(),
-                                    &trade_pair,
-                                    base_coin_qty,
-                                    qty_step,
-                                    tp_instance_arr,
-                                    recv_window,
-                                )
-                                .await
-                            },
-                            async {
-                                market_buy_spot_position(
-                                    client.clone(),
-                                    &trade_pair,
-                                    size_spot,
-                                    tp_instance_arr,
-                                    recv_window,
-                                )
-                                .await
-                            },
-                        )
-                        .await;
+                        let results = join_all(handles).await;
                     } else {
                         info!("No listing for {}", &tree_response.title);
                     }
