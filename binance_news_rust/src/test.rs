@@ -1,15 +1,15 @@
-use super::process_title;
 use super::generate_headers_and_signature;
-use super::TpCases;
-use super::update_symbol_information;
 use super::get_price;
 use super::get_trade_pair_leverage;
+use super::process_title;
+use super::update_symbol_information;
+use super::TpCases;
+use fancy_regex::Regex;
 use fraction::Decimal;
 use futures::{future, StreamExt};
 use hex;
 use hmac::Mac;
 use log::{error, info};
-use fancy_regex::Regex;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client,
@@ -22,78 +22,97 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, tungsteni
 #[test]
 fn test_process_title_variants() {
     let title_binance_listing = "Binance Will List Dymension (DYM) with Seed Tag Applied";
-    let (symbol, tp_case) = process_title(title_binance_listing).expect("Error processing binance listing");
+    let (symbol, tp_case) =
+        process_title(title_binance_listing).expect("Error processing binance listing");
 
-    assert_eq!("DYM",symbol);
+    assert_eq!("DYM", symbol);
     assert_eq!(TpCases::BinanceListing, tp_case);
 
-
     let title_upbit_listing = "KRW 마켓 디지털 자산 추가 (CTC)";
-    let (symbol, tp_case) = process_title(title_upbit_listing).expect("Error processing upbit listing");
+    let (symbol, tp_case) =
+        process_title(title_upbit_listing).expect("Error processing upbit listing");
 
-    assert_eq!("CTC",symbol);
+    assert_eq!("CTC", symbol);
     assert_eq!(TpCases::UpbitListing, tp_case);
 
-    let title_binance_futures_listing = "Binance Futures Will Launch USDⓈ-M ZETA Perpetual Contract With Up to 50x Leverage";
-    let (symbol, tp_case) = process_title(title_binance_futures_listing).expect("Error processing binance futures listing");
+    let title_binance_futures_listing =
+        "Binance Futures Will Launch USDⓈ-M ZETA Perpetual Contract With Up to 50x Leverage";
+    let (symbol, tp_case) = process_title(title_binance_futures_listing)
+        .expect("Error processing binance futures listing");
 
-    assert_eq!("ZETA",symbol);
+    assert_eq!("ZETA", symbol);
     assert_eq!(TpCases::BinanceFuturesListing, tp_case);
 
-    let title_binance_futures_1000sats = "Binance Futures Will Launch USDⓈ-M 1000SATS Perpetual Contract With Up to 50x Leverage";
-    let (symbol, tp_case) = process_title(title_binance_futures_1000sats).expect("Error processing binance futures listing");
+    let title_binance_futures_1000sats =
+        "Binance Futures Will Launch USDⓈ-M 1000SATS Perpetual Contract With Up to 50x Leverage";
+    let (symbol, tp_case) = process_title(title_binance_futures_1000sats)
+        .expect("Error processing binance futures listing");
 
-    assert_eq!("SATS",symbol);
+    assert_eq!("SATS", symbol);
     assert_eq!(TpCases::BinanceFuturesListing, tp_case);
 
     let title_empty = "";
     let (symbol, tp_case) = process_title(title_empty).expect("Error processing empty title");
 
-    assert_eq!("",symbol);
+    assert_eq!("", symbol);
     assert_eq!(TpCases::NoListing, tp_case);
-
 
     let title_random_text = "This is a random text";
     let (symbol, tp_case) = process_title(title_random_text).expect("Error processing random text");
 
-    assert_eq!("",symbol);
+    assert_eq!("", symbol);
     assert_eq!(TpCases::NoListing, tp_case);
 
     let title_bithumb_text = "맨틀(MNT) 원화 마켓 추가";
-    let (symbol, tp_case) = process_title(title_bithumb_text).expect("Error processing bithumb text");
+    let (symbol, tp_case) =
+        process_title(title_bithumb_text).expect("Error processing bithumb text");
 
-    assert_eq!("MNT",symbol);
+    assert_eq!("MNT", symbol);
     assert_eq!(TpCases::BithumbListing, tp_case);
-
 }
 
 #[test]
-fn test_generate_headers_and_signature() { 
+fn test_generate_headers_and_signature() {
     let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
     let api_key_spot = env::var("test_spot_binance_order_key").expect("Binance_API_KEY not set");
-    let api_secret_spot = env::var("test_spot_binance_order_secret").expect("Binance_API_SECRET not set");
+    let api_secret_spot =
+        env::var("test_spot_binance_order_secret").expect("Binance_API_SECRET not set");
     let mut headers_spot = HeaderMap::new();
-    headers_spot.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key_spot).expect("Issue processing api key"));
+    headers_spot.insert(
+        "X-MBX-APIKEY",
+        HeaderValue::from_str(&api_key_spot).expect("Issue processing api key"),
+    );
     let category_spot = "spot";
 
     let api_key_futures = env::var("testnet_binance_order_key").expect("Binance_API_KEY not set");
-    let api_secret_futures = env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set");
+    let api_secret_futures =
+        env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set");
     let mut headers_futures = HeaderMap::new();
-    headers_futures.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key_futures).expect("Issue processing api key"));
+    headers_futures.insert(
+        "X-MBX-APIKEY",
+        HeaderValue::from_str(&api_key_futures).expect("Issue processing api key"),
+    );
     let payload_futures = "";
     let category_futures = "futures";
 
     let api_key_other = env::var("testnet_binance_order_key").expect("Binance_API_KEY not set");
-    let api_secret_other = env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set");
+    let api_secret_other =
+        env::var("testnet_binance_order_secret").expect("Binance_API_SECRET not set");
     let mut headers_other = HeaderMap::new();
-    headers_other.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key_other).expect("Issue processing api key"));
+    headers_other.insert(
+        "X-MBX-APIKEY",
+        HeaderValue::from_str(&api_key_other).expect("Issue processing api key"),
+    );
     let payload_other = "";
     let category_other = "";
 
-    let payload_btcusdt = &format!("symbol=BTCUSDT&recvWindow=5000&timestamp={}",&current_timestamp);
-    let payload_empty = ""; 
+    let payload_btcusdt = &format!(
+        "symbol=BTCUSDT&recvWindow=5000&timestamp={}",
+        &current_timestamp
+    );
+    let payload_empty = "";
 
-    let payload_list: Vec<&str> = vec!(payload_btcusdt, payload_empty);
+    let payload_list: Vec<&str> = vec![payload_btcusdt, payload_empty];
 
     for payload in payload_list {
         let signature_spot = {
@@ -125,7 +144,7 @@ fn test_generate_headers_and_signature() {
         let (headers, signature) = generate_headers_and_signature(category_futures, payload);
         assert_eq!(headers_futures, headers);
         assert_eq!(signature_futures, signature);
-        
+
         let (headers, signature) = generate_headers_and_signature(category_other, payload);
         assert_eq!(headers_other, headers);
         assert_eq!(signature_other, signature);
@@ -138,7 +157,7 @@ async fn test_symbol_hashmap() -> Result<(), Box<dyn error::Error>> {
     let mut symbols_step_size: HashMap<String, f32> = HashMap::new();
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
 
-    let mut trade_pair_assert_hashmap : HashMap<String, f32> = HashMap::new();
+    let mut trade_pair_assert_hashmap: HashMap<String, f32> = HashMap::new();
 
     trade_pair_assert_hashmap.insert("BTCUSDT".to_string(), 0.001);
     trade_pair_assert_hashmap.insert("".to_string(), 0.0);
@@ -148,14 +167,13 @@ async fn test_symbol_hashmap() -> Result<(), Box<dyn error::Error>> {
 
     for (trade_pair, qty_step_assert) in trade_pair_assert_hashmap {
         let qty_step: f32 = symbols_step_size
-                            .get(&trade_pair)
-                            .unwrap_or(&0.0)
-                            .to_owned();
+            .get(&trade_pair)
+            .unwrap_or(&0.0)
+            .to_owned();
         assert_eq!(qty_step_assert, qty_step);
     }
 
     Ok(())
-
 }
 
 #[tokio::test]
@@ -194,13 +212,15 @@ async fn test_get_leverage() -> Result<(), Box<dyn error::Error>> {
 
     let trade_pair_empty = "";
 
-    let leverage_empty = get_trade_pair_leverage(client.clone(), trade_pair_empty, recv_window).await?;
+    let leverage_empty =
+        get_trade_pair_leverage(client.clone(), trade_pair_empty, recv_window).await?;
 
     assert_eq!(leverage_empty, 20.0);
 
     let trade_pair_invalid = "INVALID";
 
-    let leverage_invalid = get_trade_pair_leverage(client.clone(), trade_pair_invalid, recv_window).await?;
+    let leverage_invalid =
+        get_trade_pair_leverage(client.clone(), trade_pair_invalid, recv_window).await?;
 
     assert_eq!(leverage_invalid, 0.0);
 

@@ -11,13 +11,11 @@ use price_information::PriceInformation;
 use symbols_exchange_info::ExchangeInfo;
 use tree_response::TreeResponse;
 
-use env_logger;
+use fancy_regex::Regex;
 use fraction::Decimal;
 use futures::{future, StreamExt};
-use hex;
 use hmac::Mac;
 use log::{error, info};
-use fancy_regex::Regex;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Client,
@@ -100,7 +98,10 @@ fn generate_headers_and_signature(category: &str, payload: &str) -> (HeaderMap, 
     };
 
     let mut headers = HeaderMap::new();
-        headers.insert("X-MBX-APIKEY", HeaderValue::from_str(&api_key).expect("Issue processing api key"));
+    headers.insert(
+        "X-MBX-APIKEY",
+        HeaderValue::from_str(&api_key).expect("Issue processing api key"),
+    );
     (headers, signature)
 }
 
@@ -132,9 +133,10 @@ async fn get_price(client: Client, symbol: &str) -> Result<f32, Box<dyn error::E
         .await
     {
         let body = response.text().await?;
-        let price_information: PriceInformation = serde_json::from_str(&body).unwrap_or(PriceInformation {
-            price: "0.0".to_string(),
-        });
+        let price_information: PriceInformation =
+            serde_json::from_str(&body).unwrap_or(PriceInformation {
+                price: "0.0".to_string(),
+            });
         let price = price_information.price.parse::<f32>().unwrap_or(0.0);
         Ok(price)
     } else {
@@ -169,9 +171,10 @@ async fn get_trade_pair_leverage(
         .await
     {
         let body = response.text().await?;
-        let position_risk: Vec<PositionLeverage> = serde_json::from_str(&body).unwrap_or(vec![PositionLeverage {
-            leverage: "0.0".to_string(),
-        }]);
+        let position_risk: Vec<PositionLeverage> =
+            serde_json::from_str(&body).unwrap_or(vec![PositionLeverage {
+                leverage: "0.0".to_string(),
+            }]);
         let leverage = position_risk[0].leverage.parse::<f32>().unwrap_or(0.0);
         Ok(leverage)
     } else {
@@ -291,8 +294,7 @@ async fn market_sell_position(
     };
 
     for tp in tp_instance_arr {
-        let seconds: u64 = tp.time as u64;
-        sleep(Duration::from_secs(seconds)).await;
+        sleep(Duration::from_secs(tp.time)).await;
         let tp_pct = Decimal::from(tp.pct);
         let qty_step_dec = Decimal::from(qty_step);
         let qty_dec = Decimal::from(qty);
@@ -365,7 +367,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         TpCases::BinanceListing,
         [
             TpInstance {
-                time: 2*60,
+                time: 2 * 60,
                 pct: 0.75,
             },
             TpInstance {
@@ -400,14 +402,8 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     tp_map.insert(
         TpCases::BithumbListing,
         [
-            TpInstance {
-                time: 90,
-                pct: 1.0,
-            },
-            TpInstance {
-                time: 0,
-                pct: 0.0,
-            },
+            TpInstance { time: 90, pct: 1.0 },
+            TpInstance { time: 0, pct: 0.0 },
         ],
     );
 
@@ -415,14 +411,21 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
     loop {
         //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
-        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
+        if let Ok((mut socket, _)) = connect_async("ws://35.73.200.147:5050").await {
             while let Some(msg) = socket.next().await {
                 let msg = msg.unwrap_or(Message::binary(Vec::new()));
 
                 if msg.is_text() {
                     let response = msg.to_text()?;
 
-                    let tree_response: TreeResponse = serde_json::from_str(&response)?;
+                    let tree_response: TreeResponse = match serde_json::from_str(&response) {
+                        Ok(tree_response) => tree_response,
+                        Err(e) => {
+                            info!("Failed to parse tree response: {}", response);
+                            error!("Failed to parse tree response: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
 
                     let (symbol, tp_case) = process_title(&tree_response.title)?;
 
@@ -481,4 +484,3 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         };
     }
 }
-
