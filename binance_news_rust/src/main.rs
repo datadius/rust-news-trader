@@ -196,8 +196,11 @@ async fn market_buy_futures_position(
     let price: f32 = get_price(client.clone(), &symbol).await?;
     let leverage: f32 = get_trade_pair_leverage(client.clone(), &symbol, recv_window).await?;
 
-    let base_coin_qty = (size_future * leverage / price / qty_step).floor() * qty_step;
-    info!("Base coin qty: {}", base_coin_qty);
+    let size_future = Decimal::from(size_future);
+    let qty_step_dec = Decimal::from(qty_step);
+    let leverage = Decimal::from(leverage);
+    let price = Decimal::from(price);
+    let base_coin_qty = (size_future * leverage / price / qty_step_dec).floor() * qty_step_dec;
     let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
     let payload = format!(
         "symbol={}&side=BUY&type=MARKET&quantity={}&recvWindow={}&timestamp={}",
@@ -221,6 +224,10 @@ async fn market_buy_futures_position(
     {
         let body = response.text().await?;
         info!("Market buy futures position response: {}", body);
+        let base_coin_qty: f32 = base_coin_qty
+            .to_string()
+            .parse()
+            .expect("Failed to parse base coin qty");
         market_sell_position(
             client,
             &symbol,
@@ -311,17 +318,16 @@ async fn market_sell_position(
             _ => Decimal::from(0),
         };
         let current_timestamp = chrono::Utc::now().timestamp_millis().to_string();
-        let payload = match category {
-            "futures" => format!(
-                "symbol={}&side=SELL&type=MARKET&quantity={}&recvWindow={}&timestamp={}",
-                symbol, tp_qty, recv_window, &current_timestamp
-            ),
-            "spot" => format!(
-                "symbol={}&side=SELL&type=MARKET&quoteOrderQty={}&recvWindow={}&timestamp={}",
-                symbol, tp_qty, recv_window, &current_timestamp
-            ),
-            _ => "".to_string(),
+        let qty_type = match category {
+            "futures" => "quantity".to_string(),
+            "spot" => "quoteOrderQty".to_string(),
+            _ => "quantity".to_string(),
         };
+
+        let payload = format!(
+            "symbol={}&side=SELL&type=MARKET&{}={}&recvWindow={}&timestamp={}",
+            symbol, qty_type, tp_qty, recv_window, &current_timestamp
+        );
 
         let (headers, signature) = generate_headers_and_signature(category, &payload);
 
@@ -331,7 +337,7 @@ async fn market_sell_position(
                 ("symbol", symbol),
                 ("side", "SELL"),
                 ("type", "MARKET"),
-                ("quoteOrderQty", &tp_qty.to_string()),
+                (&qty_type, &tp_qty.to_string()),
                 ("recvWindow", recv_window),
                 ("timestamp", &current_timestamp),
                 ("signature", &signature),
@@ -388,11 +394,11 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         TpCases::UpbitListing,
         [
             TpInstance {
-                time: 2 * 60,
+                time: 20,
                 pct: 0.75,
             },
             TpInstance {
-                time: 13 * 60,
+                time: 30,
                 pct: 0.25,
             },
         ],
