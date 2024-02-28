@@ -23,7 +23,7 @@ use reqwest::{
     Client,
 };
 
-use std::{collections::HashMap, env, error};
+use std::{collections::HashMap, env, error, future::Future, pin::Pin};
 use tokio::task::yield_now;
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, tungstenite::Result};
@@ -349,6 +349,7 @@ async fn market_sell_position(
 
     Ok(())
 }
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -438,7 +439,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
                     info!("symbols = {:?}", symbols);
                     if tp_case != TpCases::NoListing {
-                        let handles = symbols.iter().map(|symbol| {
+                        let mut handles =
+                            FuturesUnordered::<Pin<Box<dyn Future<Output = _>>>>::new();
+                        for symbol in symbols.iter() {
                             info!("symbol = {}", symbol);
 
                             let trade_pair = format!("{}USDT", symbol);
@@ -450,17 +453,28 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                                 .unwrap_or(&0.0)
                                 .to_owned();
 
-                            market_buy_futures_position(
+                            handles.push(Box::pin(market_buy_futures_position(
                                 client.clone(),
                                 trade_pair.clone(),
                                 size_future,
                                 qty_step,
                                 tp_instance_arr,
                                 recv_window,
-                            )
-                        });
+                            )));
 
-                        let results = join_all(handles).await;
+                            handles.push(Box::pin(market_buy_spot_position(
+                                client.clone(),
+                                trade_pair.clone(),
+                                size_spot,
+                                tp_instance_arr,
+                                recv_window,
+                            )));
+                        }
+                        while let Some(result) = handles.next().await {
+                            if let Err(e) = result {
+                                error!("Failed to process trade pair: {}", e);
+                            }
+                        }
                     } else {
                         info!("No listing for {}", &tree_response.title);
                     }
