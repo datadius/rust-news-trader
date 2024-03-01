@@ -193,6 +193,7 @@ async fn market_buy_futures_position(
     tp_instance_arr: &[TpInstance; 2],
     recv_window: &str,
 ) -> Result<(), Box<dyn error::Error>> {
+    // Combine the two instances into one
     let price: f32 = get_price(client.clone(), &symbol).await?;
     let leverage: f32 = get_trade_pair_leverage(client.clone(), &symbol, recv_window).await?;
 
@@ -394,11 +395,11 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         TpCases::UpbitListing,
         [
             TpInstance {
-                time: 20,
+                time: 2 * 60,
                 pct: 0.75,
             },
             TpInstance {
-                time: 30,
+                time: 13 * 60,
                 pct: 0.25,
             },
         ],
@@ -425,7 +426,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     update_symbol_information(client.clone(), &mut symbols_step_size).await?;
     loop {
         //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
-        if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
+        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
             while let Some(msg) = socket.next().await {
                 let msg = msg.unwrap_or(Message::binary(Vec::new()));
 

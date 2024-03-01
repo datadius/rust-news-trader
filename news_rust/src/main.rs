@@ -417,9 +417,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     tp_map.insert(
         TpCases::UpbitListing,
         [
-            TpInstance { time: 6, pct: 0.75 },
+            TpInstance { time: 2 * 60, pct: 0.75 },
             TpInstance {
-                time: 10,
+                time: 13 * 60,
                 pct: 0.25,
             },
         ],
@@ -443,7 +443,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     );
     loop {
         //wss://news.treeofalpha.com/ws ws://35.73.200.147:5050
-        if let Ok((mut socket, _)) = connect_async("ws://localhost:8765").await {
+        if let Ok((mut socket, _)) = connect_async("wss://news.treeofalpha.com/ws").await {
             while let Some(msg) = socket.next().await {
                 let msg = msg.unwrap_or(Message::binary(Vec::new()));
 
